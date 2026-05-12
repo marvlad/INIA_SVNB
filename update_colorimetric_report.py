@@ -7,9 +7,21 @@ import unicodedata
 import warnings
 from datetime import datetime
 import argparse
+import sys
 
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
+
+
+# ============================================================
+# Windows UTF-8 console fix
+# ============================================================
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
@@ -42,7 +54,7 @@ TARGET_SHEET = "P_DIS"
 
 DATE_CELL = "T12"
 
-# Excel columns in P_DIS:
+# Excel columns in P_DIS for standards:
 # F = Concentración mg/L
 # H = Absorbancia / A882
 CONCENTRATION_COLUMN = "F"
@@ -51,8 +63,10 @@ A882_COLUMN = "H"
 START_ROW = 15
 
 # Sample output location in P_DIS
+# C = sample name
+# K = A882
 SAMPLE_NAME_COLUMN = "C"
-SAMPLE_CONCENTRATION_COLUMN = "K"
+SAMPLE_A882_COLUMN = "K"
 
 # General block-writing pattern
 # Example:
@@ -390,6 +404,10 @@ def get_sample_excel_row(
 def extract_standard_values_from_rows(rows, sample_idx, a882_idx, concentration_idx):
     """
     Extracts Estándar 1 to Estándar 7.
+
+    Standards are written as:
+        Concentracion -> F15:F21
+        A882          -> H15:H21
     """
     standards = {}
 
@@ -432,7 +450,7 @@ def extract_standard_values_from_rows(rows, sample_idx, a882_idx, concentration_
     return standards
 
 
-def extract_sample_values_from_rows(rows, sample_idx, concentration_idx):
+def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_idx):
     """
     Extracts all non-standard sample rows.
 
@@ -445,11 +463,18 @@ def extract_sample_values_from_rows(rows, sample_idx, concentration_idx):
     It skips:
         - header row
         - Estándar 1 to Estándar 7
+
+    Samples are written as:
+        C37 = sample name
+        K37 = A882
+
+    Concentracion is still stored internally for printing/debugging,
+    but it is not written to K.
     """
     samples = []
 
     for row in rows:
-        if len(row) <= max(sample_idx, concentration_idx):
+        if len(row) <= max(sample_idx, a882_idx, concentration_idx):
             continue
 
         raw_name = row[sample_idx].strip()
@@ -463,10 +488,11 @@ def extract_sample_values_from_rows(rows, sample_idx, concentration_idx):
         if re.search(r"EST[A-Z]*NDAR\s*\d+", clean_name):
             continue
 
+        a882_value = parse_decimal(row[a882_idx])
         concentration_value = parse_decimal(row[concentration_idx])
 
-        if concentration_value is None:
-            print(f"WARNING: Could not parse sample concentration row: {row}")
+        if a882_value is None:
+            print(f"WARNING: Could not parse sample A882 row: {row}")
             continue
 
         sample_name = convert_sample_name(raw_name)
@@ -475,12 +501,14 @@ def extract_sample_values_from_rows(rows, sample_idx, concentration_idx):
             {
                 "raw_name": raw_name,
                 "sample_name": sample_name,
+                "A882": a882_value,
                 "Concentracion": concentration_value,
             }
         )
 
         print(
             f"Found sample: {raw_name} -> {sample_name}, "
+            f"A882={a882_value}, "
             f"Concentracion={concentration_value}"
         )
 
@@ -509,6 +537,7 @@ def read_csv_data(csv_file):
     samples = extract_sample_values_from_rows(
         rows=rows,
         sample_idx=sample_idx,
+        a882_idx=a882_idx,
         concentration_idx=concentration_idx,
     )
 
@@ -591,7 +620,7 @@ def reinsert_images(wb, image_dir):
 
 def write_standard_values(ws, standards):
     """
-    Writes:
+    Writes standards:
 
         CSV Concentracion -> Excel F15:F21
         CSV A882          -> Excel H15:H21
@@ -618,22 +647,24 @@ def clear_old_sample_values(ws, max_samples=300):
         C60:C79, K60:K79
         C83:C102, K83:K102
         ...
+
+    Clears:
+        C = sample name
+        K = A882
     """
     for i in range(max_samples):
         row = get_sample_excel_row(i)
 
         ws[f"{SAMPLE_NAME_COLUMN}{row}"] = None
-        ws[f"{SAMPLE_CONCENTRATION_COLUMN}{row}"] = None
+        ws[f"{SAMPLE_A882_COLUMN}{row}"] = None
 
 
 def write_sample_values(ws, samples):
     """
     Writes all samples in P_DIS using this general pattern:
 
-        start at SAMPLE_START_ROW
-        write SAMPLES_PER_BLOCK rows
-        skip ROWS_TO_SKIP rows
-        repeat
+        C37 = sample name
+        K37 = A882
 
     Default:
         C37:C56,   K37:K56
@@ -647,17 +678,17 @@ def write_sample_values(ws, samples):
         row = get_sample_excel_row(i)
 
         name_cell = f"{SAMPLE_NAME_COLUMN}{row}"
-        concentration_cell = f"{SAMPLE_CONCENTRATION_COLUMN}{row}"
+        a882_cell = f"{SAMPLE_A882_COLUMN}{row}"
 
         ws[name_cell] = sample["sample_name"]
-        ws[concentration_cell] = sample["Concentracion"]
+        ws[a882_cell] = sample["A882"]
 
-        ws[concentration_cell].number_format = "0.00000"
+        ws[a882_cell].number_format = "0.00000"
 
         print(
             f"Written sample {i + 1}: "
             f"{name_cell} = {sample['sample_name']}, "
-            f"{concentration_cell} = {sample['Concentracion']:.5f}"
+            f"{a882_cell} = {sample['A882']:.5f}"
         )
 
 
@@ -731,7 +762,9 @@ def update_report(input_xlsm, csv_file, image_dir, method):
     # Standards 1-7 into P_DIS F15:F21 and H15:H21
     write_standard_values(ws, standards)
 
-    # Samples into P_DIS C/K using block pattern
+    # Samples into P_DIS C/K using block pattern:
+    #   C = sample name
+    #   K = A882
     write_sample_values(ws, samples)
 
     # Reinsert fixed images
@@ -762,8 +795,8 @@ def update_report(input_xlsm, csv_file, image_dir, method):
         print(
             f"  Sample {i + 1}, row {row}: "
             f"{SAMPLE_NAME_COLUMN}{row} = {sample['sample_name']}, "
-            f"{SAMPLE_CONCENTRATION_COLUMN}{row} = "
-            f"{sample['Concentracion']:.5f}"
+            f"{SAMPLE_A882_COLUMN}{row} = "
+            f"{sample['A882']:.5f}"
         )
 
     return output_xlsm
