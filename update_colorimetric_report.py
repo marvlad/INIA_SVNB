@@ -26,8 +26,8 @@ OUTPUT_DIR = "output"
 
 TARGET_SHEET = "P_DIS"
 
-# Sheet where the final sample/result data goes.
-# Change this if C37 and K36 are in another sheet.
+# Sheet where C37 and K37 are located.
+# Change this if those cells are in another sheet.
 REPORT_SHEET = "Resultados"
 
 DATE_CELL = "T12"
@@ -40,9 +40,10 @@ A882_COLUMN = "H"
 
 START_ROW = 15
 
-# Template report cells
-SAMPLE_NAME_CELL = "C37"
-SAMPLE_CONCENTRATION_CELL = "K36"
+# Sample output location
+SAMPLE_NAME_COLUMN = "C"
+SAMPLE_CONCENTRATION_COLUMN = "K"
+SAMPLE_START_ROW = 37
 
 # Use images directly from the extracted folder
 IMAGE_DIR = "extracted_images_from_xlsm/media"
@@ -242,31 +243,36 @@ def make_safe_filename(text):
     return text.strip("_")
 
 
-def convert_su_name(raw_name):
+def convert_sample_name(raw_name):
     """
-    Converts names like:
+    Converts:
 
-        SU 723 1
-        SU 723 2
-        SU 62 1
-
-    into:
-
-        SU0723-ILL-26
-        SU0062-ILL-26
+        SU 723 1  -> SU0723-ILL-26
+        SU 62 1   -> SU0062-ILL-26
 
     It omits the last number after the space.
-    """
-    clean = norm(raw_name)
 
+    If the name is not SU format, returns the original name.
+    """
+    if raw_name is None:
+        return ""
+
+    original = str(raw_name).strip()
+    clean = norm(original)
+
+    # Match:
+    #   SU 723 1
+    #   SU 0723 2
+    #
+    # Captures only 723 or 0723 and ignores the last number.
     match = re.search(r"\bSU\s*0*(\d+)\s+\d+\b", clean)
 
-    if not match:
-        return None
+    if match:
+        su_number = int(match.group(1))
+        return f"SU{su_number:04d}-ILL-26"
 
-    su_number = int(match.group(1))
-
-    return f"SU{su_number:04d}-ILL-26"
+    # If there is no SU pattern, copy the name as it appears in the CSV
+    return original
 
 
 # ============================================================
@@ -285,6 +291,9 @@ def extract_standard_values_from_rows(rows, sample_idx, a882_idx, concentration_
 
         sample_name = norm(row[sample_idx])
 
+        # Matches:
+        #   ESTANDAR 1
+        #   ESTÁNDAR 1
         match = re.search(r"EST[A-Z]*NDAR\s*(\d+)", sample_name)
 
         if not match:
@@ -320,24 +329,17 @@ def extract_standard_values_from_rows(rows, sample_idx, a882_idx, concentration_
 
 def extract_sample_values_from_rows(rows, sample_idx, concentration_idx):
     """
-    Extracts sample rows after standards.
+    Extracts all non-standard sample rows.
 
-    Reads rows like:
-        Nombre       Concentracion
-        SU 723 1     0,12345
-        SU 723 2     0,12567
+    Example:
 
-    Converts Nombre to:
-        SU0723-ILL-26
+        SU 723 1 -> SU0723-ILL-26
+        BLANCO   -> BLANCO
+        CONTROL  -> CONTROL
 
-    Returns list of dictionaries:
-        [
-            {
-                "raw_name": "SU 723 1",
-                "sample_name": "SU0723-ILL-26",
-                "Concentracion": 0.12345,
-            }
-        ]
+    It skips:
+        - header row
+        - Estándar 1 to Estándar 7
     """
     samples = []
 
@@ -346,9 +348,14 @@ def extract_sample_values_from_rows(rows, sample_idx, concentration_idx):
             continue
 
         raw_name = row[sample_idx].strip()
-        sample_name = convert_su_name(raw_name)
+        clean_name = norm(raw_name)
 
-        if sample_name is None:
+        # Skip header row
+        if "NOMBRE" in clean_name:
+            continue
+
+        # Skip standard rows
+        if re.search(r"EST[A-Z]*NDAR\s*\d+", clean_name):
             continue
 
         concentration_value = parse_decimal(row[concentration_idx])
@@ -356,6 +363,8 @@ def extract_sample_values_from_rows(rows, sample_idx, concentration_idx):
         if concentration_value is None:
             print(f"WARNING: Could not parse sample concentration row: {row}")
             continue
+
+        sample_name = convert_sample_name(raw_name)
 
         samples.append(
             {
@@ -371,12 +380,17 @@ def extract_sample_values_from_rows(rows, sample_idx, concentration_idx):
         )
 
     if not samples:
-        raise ValueError("No sample rows found. Expected names like: SU 723 1")
+        raise ValueError("No sample rows found after standards.")
 
     return samples
 
 
 def read_csv_data(csv_file):
+    """
+    Reads:
+        - standards 1-7
+        - all sample rows
+    """
     rows = read_csv_rows(csv_file)
     sample_idx, a882_idx, concentration_idx = find_header_indices(rows)
 
@@ -483,29 +497,43 @@ def write_standard_values(ws, standards):
         ws[f"{A882_COLUMN}{row}"].number_format = "0.00000"
 
 
-def write_sample_values(ws, sample):
+def write_sample_values(ws, samples):
     """
-    Writes sample result into the report template:
+    Writes all samples starting at:
 
-        C37 = sample name, e.g. SU0723-ILL-26
-        K36 = concentration
+        C37 = sample name
+        K37 = concentration
+
+    Then continues downward:
+        C38 / K38
+        C39 / K39
+        ...
     """
-    ws[SAMPLE_NAME_CELL] = sample["sample_name"]
-    ws[SAMPLE_CONCENTRATION_CELL] = sample["Concentracion"]
+    for i, sample in enumerate(samples):
+        row = SAMPLE_START_ROW + i
 
-    ws[SAMPLE_CONCENTRATION_CELL].number_format = "0.00000"
+        name_cell = f"{SAMPLE_NAME_COLUMN}{row}"
+        concentration_cell = f"{SAMPLE_CONCENTRATION_COLUMN}{row}"
+
+        ws[name_cell] = sample["sample_name"]
+        ws[concentration_cell] = sample["Concentracion"]
+
+        ws[concentration_cell].number_format = "0.00000"
+
+        print(
+            f"Written: {name_cell} = {sample['sample_name']}, "
+            f"{concentration_cell} = {sample['Concentracion']:.5f}"
+        )
 
 
-def create_output_path(csv_file, sample):
+def create_output_path(csv_file):
     """
     Creates output filename like:
 
-        Analizado_Cuantificacion_23_03_2026_12_52_11_SU0723-ILL-26.xlsm
+        Analizado_Cuantificacion_23_03_2026_12_52_11.xlsm
     """
     csv_stem = make_safe_filename(Path(csv_file).stem)
-    sample_name = sample["sample_name"]
-
-    filename = f"Analizado_{csv_stem}_{sample_name}.xlsm"
+    filename = f"Analizado_{csv_stem}.xlsm"
 
     return Path(OUTPUT_DIR) / filename
 
@@ -527,72 +555,82 @@ def update_report(input_xlsm, csv_file, image_dir):
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\nUpdating colorimetric reports")
+    output_xlsm = create_output_path(csv_file).resolve()
+
+    print("\nUpdating colorimetric report")
     print(f"Template: {input_xlsm}")
     print(f"CSV: {csv_file}")
     print(f"Images: {image_dir}")
-    print(f"Output folder: {output_dir}")
+    print(f"Output: {output_xlsm}")
 
+    # Read CSV data
     date_value = extract_date_from_filename(csv_file)
     standards, samples = read_csv_data(csv_file)
 
-    created_files = []
+    # Copy template once
+    copyfile(input_xlsm, output_xlsm)
 
-    for sample in samples:
-        output_xlsm = create_output_path(csv_file, sample).resolve()
+    # Open copied XLSM with macros preserved
+    wb = load_workbook(output_xlsm, keep_vba=True)
 
-        print("\nCreating report:")
-        print(f"  Sample: {sample['sample_name']}")
-        print(f"  Concentracion: {sample['Concentracion']}")
-        print(f"  Output: {output_xlsm}")
+    if TARGET_SHEET not in wb.sheetnames:
+        print("Available sheets:")
+        for sheet in wb.sheetnames:
+            print(repr(sheet))
 
-        # Copy template first
-        copyfile(input_xlsm, output_xlsm)
+        raise KeyError(f"Target sheet not found: {TARGET_SHEET}")
 
-        # Open copied XLSM with macros preserved
-        wb = load_workbook(output_xlsm, keep_vba=True)
+    if REPORT_SHEET not in wb.sheetnames:
+        print("Available sheets:")
+        for sheet in wb.sheetnames:
+            print(repr(sheet))
 
-        if TARGET_SHEET not in wb.sheetnames:
-            print("Available sheets:")
-            for sheet in wb.sheetnames:
-                print(repr(sheet))
+        raise KeyError(f"Report sheet not found: {REPORT_SHEET}")
 
-            raise KeyError(f"Target sheet not found: {TARGET_SHEET}")
+    ws_standards = wb[TARGET_SHEET]
+    ws_report = wb[REPORT_SHEET]
 
-        if REPORT_SHEET not in wb.sheetnames:
-            print("Available sheets:")
-            for sheet in wb.sheetnames:
-                print(repr(sheet))
+    # Date
+    ws_standards[DATE_CELL] = date_value
+    ws_standards[DATE_CELL].number_format = "dd/mm/yyyy"
 
-            raise KeyError(f"Report sheet not found: {REPORT_SHEET}")
+    # Standards 1-7
+    write_standard_values(ws_standards, standards)
 
-        ws_standards = wb[TARGET_SHEET]
-        ws_report = wb[REPORT_SHEET]
+    # Samples from CSV into C37/K37 downward
+    write_sample_values(ws_report, samples)
 
-        # Date
-        ws_standards[DATE_CELL] = date_value
-        ws_standards[DATE_CELL].number_format = "dd/mm/yyyy"
+    # Reinsert fixed images
+    reinsert_images(wb, image_dir=image_dir)
 
-        # Standards
-        write_standard_values(ws_standards, standards)
+    # Save
+    wb.save(output_xlsm)
 
-        # Sample result
-        write_sample_values(ws_report, sample)
+    print("\nReport created successfully:")
+    print(f"  {output_xlsm}")
 
-        # Reinsert fixed images
-        reinsert_images(wb, image_dir=image_dir)
+    print("\nStandards written:")
+    for standard_number in range(1, 8):
+        row = START_ROW + standard_number - 1
 
-        # Save
-        wb.save(output_xlsm)
+        print(
+            f"  Estándar {standard_number}: "
+            f"{CONCENTRATION_COLUMN}{row} = "
+            f"{standards[standard_number]['Concentracion']:.5f}, "
+            f"{A882_COLUMN}{row} = "
+            f"{standards[standard_number]['A882']:.5f}"
+        )
 
-        created_files.append(output_xlsm)
+    print("\nSamples written:")
+    for i, sample in enumerate(samples):
+        row = SAMPLE_START_ROW + i
 
-        print("Report created successfully:")
-        print(f"  {output_xlsm}")
-
-    print("\nAll reports created:")
-    for path in created_files:
-        print(f"  {path}")
+        print(
+            f"  Row {row}: "
+            f"{SAMPLE_NAME_COLUMN}{row} = {sample['sample_name']}, "
+            f"{SAMPLE_CONCENTRATION_COLUMN}{row} = "
+            f"{sample['Concentracion']:.5f}"
+        )
 
 
 def main():
