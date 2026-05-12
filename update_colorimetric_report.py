@@ -6,6 +6,7 @@ import re
 import unicodedata
 import warnings
 from datetime import datetime
+import argparse
 
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
@@ -18,7 +19,12 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 # Config
 # ============================================================
 
-INPUT_XLSM = "template/F-82 Reporte de Resultados Colorimetricos Ver.05 Bray.xlsm"
+TEMPLATE_DIR = "template"
+
+TEMPLATES = {
+    "bray": "F-82 Reporte de Resultados Colorimetricos Ver.05 Bray.xlsm",
+    "olsen": "F-82 Reporte de Resultados Colorimetricos Ver.05 Olsen.xlsm",
+}
 
 # File containing the list of CSV files
 INPUT_DAT = "input.dat"
@@ -26,6 +32,10 @@ INPUT_DAT = "input.dat"
 # Folder where the CSV files are located
 CSV_DIR = "input"
 
+# Base output folder.
+# The script will create:
+#   output/bray/
+#   output/olsen/
 OUTPUT_DIR = "output"
 
 TARGET_SHEET = "P_DIS"
@@ -56,6 +66,34 @@ ROWS_TO_SKIP = 3
 
 # Use images directly from the extracted folder
 IMAGE_DIR = "extracted_images_from_xlsm/media"
+
+
+# ============================================================
+# Command-line arguments
+# ============================================================
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Generate analyzed colorimetric reports from CSV files."
+    )
+
+    parser.add_argument(
+        "--method",
+        choices=["Bray", "Olsen", "bray", "olsen"],
+        required=True,
+        help="Template method to use: Bray or Olsen",
+    )
+
+    return parser.parse_args()
+
+
+def get_template_path(method):
+    method_key = method.lower()
+
+    if method_key not in TEMPLATES:
+        raise ValueError(f"Unknown method: {method}")
+
+    return Path(TEMPLATE_DIR) / TEMPLATES[method_key]
 
 
 # ============================================================
@@ -499,12 +537,12 @@ def reinsert_images(wb, image_dir):
             ("image2.jpeg", "B1", 0.3588),
             ("image3.png", "B3", 0.5148),
 
-            # Equation image moved to S19 and made half size
-            # Old:
-            #   ("image4.png", "N19", 0.55)
-            # New:
-            #   0.55 / 2 = 0.275
-            ("image4.png", "T20", 0.335),
+            # Equation image moved to S20 and made 30% smaller
+            # Old scale:
+            #   0.55
+            # New scale:
+            #   0.55 * 0.70 = 0.385
+            ("image4.png", "S20", 0.385),
         ],
 
         "Resultados": [
@@ -623,23 +661,31 @@ def write_sample_values(ws, samples):
         )
 
 
-def create_output_path(csv_file):
+def create_output_path(csv_file, method):
     """
-    Creates output filename like:
+    Creates output path like:
 
-        Analizado_Cuantificacion_23_03_2026_12_52_11.xlsm
+        output/bray/Analizado_Bray_Cuantificacion_23_03_2026_12_52_11.xlsm
+        output/olsen/Analizado_Olsen_Cuantificacion_23_03_2026_12_52_11.xlsm
+
+    If the method folder does not exist, it is created.
     """
     csv_stem = make_safe_filename(Path(csv_file).stem)
-    filename = f"Analizado_{csv_stem}.xlsm"
+    method_key = method.lower()
+    method_name = method_key.capitalize()
 
-    return Path(OUTPUT_DIR) / filename
+    method_output_dir = Path(OUTPUT_DIR) / method_key
+    method_output_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"Analizado_{method_name}_{csv_stem}.xlsm"
+
+    return method_output_dir / filename
 
 
-def update_report(input_xlsm, csv_file, image_dir):
+def update_report(input_xlsm, csv_file, image_dir, method):
     input_xlsm = Path(input_xlsm).resolve()
     csv_file = Path(csv_file).resolve()
     image_dir = Path(image_dir).resolve()
-    output_dir = Path(OUTPUT_DIR).resolve()
 
     if not input_xlsm.exists():
         raise FileNotFoundError(f"Template not found: {input_xlsm}")
@@ -647,13 +693,12 @@ def update_report(input_xlsm, csv_file, image_dir):
     if not csv_file.exists():
         raise FileNotFoundError(f"CSV not found: {csv_file}")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    output_xlsm = create_output_path(csv_file).resolve()
+    output_xlsm = create_output_path(csv_file, method).resolve()
 
     print("\n============================================================")
     print("Updating colorimetric report")
     print("============================================================")
+    print(f"Method: {method.capitalize()}")
     print(f"Template: {input_xlsm}")
     print(f"CSV: {csv_file}")
     print(f"Images: {image_dir}")
@@ -663,7 +708,7 @@ def update_report(input_xlsm, csv_file, image_dir):
     date_value = extract_date_from_filename(csv_file)
     standards, samples = read_csv_data(csv_file)
 
-    # Copy template once
+    # Copy selected template once
     copyfile(input_xlsm, output_xlsm)
 
     # Open copied XLSM with macros preserved
@@ -725,10 +770,23 @@ def update_report(input_xlsm, csv_file, image_dir):
 
 
 def main():
-    input_xlsm = Path(INPUT_XLSM)
+    args = parse_args()
+
+    method = args.method.lower()
+
+    input_xlsm = get_template_path(method)
     input_dat = Path(INPUT_DAT)
     csv_dir = Path(CSV_DIR)
     image_dir = Path(IMAGE_DIR)
+
+    print("\nSelected method:")
+    print(f"  {method.capitalize()}")
+
+    print("\nSelected template:")
+    print(f"  {input_xlsm}")
+
+    print("\nOutput directory:")
+    print(f"  {Path(OUTPUT_DIR) / method}")
 
     csv_names = read_input_dat(input_dat)
 
@@ -747,6 +805,7 @@ def main():
                 input_xlsm=input_xlsm,
                 csv_file=csv_path,
                 image_dir=image_dir,
+                method=method,
             )
             created_reports.append(output_file)
 
