@@ -124,7 +124,6 @@ def read_text_auto_encoding(csv_file):
         try:
             text = raw.decode(enc)
 
-            # Good decoding should not have many null bytes
             if text.count("\x00") < 5:
                 print(f"Detected CSV encoding for {csv_file.name}: {enc}")
                 return text
@@ -132,7 +131,10 @@ def read_text_auto_encoding(csv_file):
         except UnicodeDecodeError:
             pass
 
-    print(f"WARNING: Could not detect CSV encoding cleanly for {csv_file.name}. Removing null bytes.")
+    print(
+        f"WARNING: Could not detect CSV encoding cleanly for "
+        f"{csv_file.name}. Removing null bytes."
+    )
     return raw.decode("latin-1", errors="ignore").replace("\x00", "")
 
 
@@ -310,18 +312,12 @@ def convert_sample_name(raw_name):
     original = str(raw_name).strip()
     clean = norm(original)
 
-    # Match:
-    #   SU 723 1
-    #   SU 0723 2
-    #
-    # Captures only 723 or 0723 and ignores the last number.
     match = re.search(r"\bSU\s*0*(\d+)\s+\d+\b", clean)
 
     if match:
         su_number = int(match.group(1))
         return f"SU{su_number:04d}-ILL-26"
 
-    # If there is no SU pattern, copy the name as it appears in the CSV
     return original
 
 
@@ -370,9 +366,6 @@ def extract_standard_values_from_rows(rows, sample_idx, a882_idx, concentration_
 
         sample_name = norm(row[sample_idx])
 
-        # Matches:
-        #   ESTANDAR 1
-        #   ESTÁNDAR 1
         match = re.search(r"EST[A-Z]*NDAR\s*(\d+)", sample_name)
 
         if not match:
@@ -507,19 +500,28 @@ def reinsert_images(wb, image_dir):
 
     images_by_sheet = {
         "P_DIS": [
-            ("image2.jpeg", "A1", 0.23),
-            ("image3.png", "A3", 0.33),
+            # Top-left images, now 30% bigger than before
+            # Old scales:
+            #   image2.jpeg = 0.23
+            #   image3.png  = 0.33
+            # New scales:
+            #   0.23 * 1.30 = 0.299
+            #   0.33 * 1.30 = 0.429
+            ("image2.jpeg", "A1", 0.299),
+            ("image3.png", "A3", 0.429),
+
+            # Equation image unchanged
             ("image4.png", "N19", 0.55),
         ],
 
         "Resultados": [
-            ("image2.jpeg", "A1", 0.23),
-            ("image3.png", "A3", 0.33),
+            ("image2.jpeg", "A1", 0.299),
+            ("image3.png", "A3", 0.429),
         ],
 
         "Datos": [
-            ("image2.jpeg", "A1", 0.23),
-            ("image3.png", "A3", 0.33),
+            ("image2.jpeg", "A1", 0.299),
+            ("image3.png", "A3", 0.429),
         ],
     }
 
