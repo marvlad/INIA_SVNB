@@ -20,7 +20,11 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 INPUT_XLSM = "template/F-82 Reporte de Resultados Colorimetricos Ver.05 Bray.xlsm"
 
-CSV_FILE = "input/Cuantificación_23_03_2026_12_52_11.csv"
+# File containing the list of CSV files
+INPUT_DAT = "input.dat"
+
+# Folder where the CSV files are located
+CSV_DIR = "input"
 
 OUTPUT_DIR = "output"
 
@@ -122,14 +126,55 @@ def read_text_auto_encoding(csv_file):
 
             # Good decoding should not have many null bytes
             if text.count("\x00") < 5:
-                print(f"Detected CSV encoding: {enc}")
+                print(f"Detected CSV encoding for {csv_file.name}: {enc}")
                 return text
 
         except UnicodeDecodeError:
             pass
 
-    print("WARNING: Could not detect CSV encoding cleanly. Removing null bytes.")
+    print(f"WARNING: Could not detect CSV encoding cleanly for {csv_file.name}. Removing null bytes.")
     return raw.decode("latin-1", errors="ignore").replace("\x00", "")
+
+
+def read_input_dat(input_dat):
+    """
+    Reads input.dat.
+
+    Example input.dat:
+
+        Cuantificación_16_04_2026_12_59_38.csv
+        Cuantificación_17_04_2026_17_54_55.csv
+        Cuantificación_17_04_2026_18_14_31.csv
+
+    Empty lines and lines starting with # are ignored.
+    """
+    input_dat = Path(input_dat)
+
+    if not input_dat.exists():
+        raise FileNotFoundError(f"input.dat not found: {input_dat}")
+
+    csv_files = []
+
+    with open(input_dat, "r", encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+
+            if not line:
+                continue
+
+            if line.startswith("#"):
+                continue
+
+            csv_files.append(line)
+
+    if not csv_files:
+        raise ValueError(f"No CSV files found in {input_dat}")
+
+    print("\nCSV files listed in input.dat:")
+    for csv_name in csv_files:
+        print(f"  {csv_name}")
+
+    return csv_files
 
 
 def read_csv_rows(csv_file):
@@ -607,14 +652,13 @@ def update_report(input_xlsm, csv_file, image_dir):
     if not csv_file.exists():
         raise FileNotFoundError(f"CSV not found: {csv_file}")
 
-    if not image_dir.exists():
-        raise FileNotFoundError(f"Image directory not found: {image_dir}")
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
     output_xlsm = create_output_path(csv_file).resolve()
 
-    print("\nUpdating colorimetric report")
+    print("\n============================================================")
+    print("Updating colorimetric report")
+    print("============================================================")
     print(f"Template: {input_xlsm}")
     print(f"CSV: {csv_file}")
     print(f"Images: {image_dir}")
@@ -682,13 +726,55 @@ def update_report(input_xlsm, csv_file, image_dir):
             f"{sample['Concentracion']:.5f}"
         )
 
+    return output_xlsm
+
 
 def main():
-    update_report(
-        input_xlsm=INPUT_XLSM,
-        csv_file=CSV_FILE,
-        image_dir=IMAGE_DIR,
-    )
+    input_xlsm = Path(INPUT_XLSM)
+    input_dat = Path(INPUT_DAT)
+    csv_dir = Path(CSV_DIR)
+    image_dir = Path(IMAGE_DIR)
+
+    csv_names = read_input_dat(input_dat)
+
+    created_reports = []
+    failed_reports = []
+
+    for csv_name in csv_names:
+        csv_path = Path(csv_name)
+
+        # If input.dat gives only filename, look inside CSV_DIR
+        if not csv_path.is_absolute():
+            csv_path = csv_dir / csv_path
+
+        try:
+            output_file = update_report(
+                input_xlsm=input_xlsm,
+                csv_file=csv_path,
+                image_dir=image_dir,
+            )
+            created_reports.append(output_file)
+
+        except Exception as e:
+            print("\nERROR while processing:")
+            print(f"  CSV: {csv_path}")
+            print(f"  Error: {e}")
+            failed_reports.append((csv_path, e))
+
+    print("\n============================================================")
+    print("Batch finished")
+    print("============================================================")
+
+    print("\nCreated reports:")
+    for report in created_reports:
+        print(f"  {report}")
+
+    if failed_reports:
+        print("\nFailed reports:")
+        for csv_path, error in failed_reports:
+            print(f"  {csv_path} -> {error}")
+    else:
+        print("\nNo failed reports.")
 
 
 if __name__ == "__main__":
