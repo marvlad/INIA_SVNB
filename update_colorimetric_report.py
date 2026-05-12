@@ -495,15 +495,16 @@ def reinsert_images(wb, image_dir):
 
     images_by_sheet = {
         "P_DIS": [
-            # Top-left images.
-            # Moved one column to the right:
-            #   A1 -> B1
-            #   A3 -> B3
+            # Top-left images moved one column to the right
             ("image2.jpeg", "B1", 0.3588),
             ("image3.png", "B3", 0.5148),
 
-            # Equation image unchanged
-            ("image4.png", "N19", 0.55),
+            # Equation image moved to S19 and made half size
+            # Old:
+            #   ("image4.png", "N19", 0.55)
+            # New:
+            #   0.55 / 2 = 0.275
+            ("image4.png", "S19", 0.275),
         ],
 
         "Resultados": [
