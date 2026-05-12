@@ -333,12 +333,7 @@ def get_sample_excel_row(
     Starting from start_row, it writes samples_per_block rows,
     then skips rows_to_skip rows, and repeats.
 
-    Example with:
-        start_row = 37
-        samples_per_block = 20
-        rows_to_skip = 3
-
-    Output rows:
+    Example:
         37-56
         60-79
         83-102
@@ -500,28 +495,33 @@ def reinsert_images(wb, image_dir):
 
     images_by_sheet = {
         "P_DIS": [
-            # Top-left images, now 30% bigger than before
-            # Old scales:
+            # Top-left images.
+            # Original:
             #   image2.jpeg = 0.23
             #   image3.png  = 0.33
-            # New scales:
+            #
+            # First increase by 30%:
             #   0.23 * 1.30 = 0.299
             #   0.33 * 1.30 = 0.429
-            ("image2.jpeg", "A1", 0.299),
-            ("image3.png", "A3", 0.429),
+            #
+            # Then another 20% bigger:
+            #   0.299 * 1.20 = 0.3588
+            #   0.429 * 1.20 = 0.5148
+            ("image2.jpeg", "A1", 0.3588),
+            ("image3.png", "A3", 0.5148),
 
             # Equation image unchanged
             ("image4.png", "N19", 0.55),
         ],
 
         "Resultados": [
-            ("image2.jpeg", "A1", 0.299),
-            ("image3.png", "A3", 0.429),
+            ("image2.jpeg", "A1", 0.3588),
+            ("image3.png", "A3", 0.5148),
         ],
 
         "Datos": [
-            ("image2.jpeg", "A1", 0.299),
-            ("image3.png", "A3", 0.429),
+            ("image2.jpeg", "A1", 0.3588),
+            ("image3.png", "A3", 0.5148),
         ],
     }
 
