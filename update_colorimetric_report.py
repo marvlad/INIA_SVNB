@@ -39,7 +39,16 @@ START_ROW = 15
 # Sample output location in P_DIS
 SAMPLE_NAME_COLUMN = "C"
 SAMPLE_CONCENTRATION_COLUMN = "K"
+
+# General block-writing pattern
+# Example:
+#   start at 37
+#   write 20 rows: 37-56
+#   skip 3 rows: 57-59
+#   continue: 60-79
 SAMPLE_START_ROW = 37
+SAMPLES_PER_BLOCK = 20
+ROWS_TO_SKIP = 3
 
 # Use images directly from the extracted folder
 IMAGE_DIR = "extracted_images_from_xlsm/media"
@@ -271,6 +280,35 @@ def convert_sample_name(raw_name):
     return original
 
 
+def get_sample_excel_row(
+    sample_index,
+    start_row=SAMPLE_START_ROW,
+    samples_per_block=SAMPLES_PER_BLOCK,
+    rows_to_skip=ROWS_TO_SKIP,
+):
+    """
+    General row mapper.
+
+    Starting from start_row, it writes samples_per_block rows,
+    then skips rows_to_skip rows, and repeats.
+
+    Example with:
+        start_row = 37
+        samples_per_block = 20
+        rows_to_skip = 3
+
+    Output rows:
+        37-56
+        60-79
+        83-102
+        ...
+    """
+    block = sample_index // samples_per_block
+    position = sample_index % samples_per_block
+
+    return start_row + block * (samples_per_block + rows_to_skip) + position
+
+
 # ============================================================
 # CSV extraction
 # ============================================================
@@ -493,35 +531,42 @@ def write_standard_values(ws, standards):
         ws[f"{A882_COLUMN}{row}"].number_format = "0.00000"
 
 
-def clear_old_sample_values(ws, max_rows=300):
+def clear_old_sample_values(ws, max_samples=300):
     """
-    Optional cleanup before writing new samples.
+    Clears old sample values using the same general block pattern.
 
-    Clears old values from:
-        C37:C...
-        K37:K...
+    Example:
+        C37:C56, K37:K56
+        C60:C79, K60:K79
+        C83:C102, K83:K102
+        ...
     """
-    for row in range(SAMPLE_START_ROW, SAMPLE_START_ROW + max_rows):
+    for i in range(max_samples):
+        row = get_sample_excel_row(i)
+
         ws[f"{SAMPLE_NAME_COLUMN}{row}"] = None
         ws[f"{SAMPLE_CONCENTRATION_COLUMN}{row}"] = None
 
 
 def write_sample_values(ws, samples):
     """
-    Writes all samples in P_DIS starting at:
+    Writes all samples in P_DIS using this general pattern:
 
-        C37 = sample name
-        K37 = concentration
+        start at SAMPLE_START_ROW
+        write SAMPLES_PER_BLOCK rows
+        skip ROWS_TO_SKIP rows
+        repeat
 
-    Then continues downward:
-        C38 / K38
-        C39 / K39
+    Default:
+        C37:C56,   K37:K56
+        C60:C79,   K60:K79
+        C83:C102,  K83:K102
         ...
     """
     clear_old_sample_values(ws)
 
     for i, sample in enumerate(samples):
-        row = SAMPLE_START_ROW + i
+        row = get_sample_excel_row(i)
 
         name_cell = f"{SAMPLE_NAME_COLUMN}{row}"
         concentration_cell = f"{SAMPLE_CONCENTRATION_COLUMN}{row}"
@@ -532,7 +577,8 @@ def write_sample_values(ws, samples):
         ws[concentration_cell].number_format = "0.00000"
 
         print(
-            f"Written: {name_cell} = {sample['sample_name']}, "
+            f"Written sample {i + 1}: "
+            f"{name_cell} = {sample['sample_name']}, "
             f"{concentration_cell} = {sample['Concentracion']:.5f}"
         )
 
@@ -601,7 +647,7 @@ def update_report(input_xlsm, csv_file, image_dir):
     # Standards 1-7 into P_DIS F15:F21 and H15:H21
     write_standard_values(ws, standards)
 
-    # Samples into P_DIS C37/K37 downward
+    # Samples into P_DIS C/K using block pattern
     write_sample_values(ws, samples)
 
     # Reinsert fixed images
@@ -627,10 +673,10 @@ def update_report(input_xlsm, csv_file, image_dir):
 
     print("\nSamples written in P_DIS:")
     for i, sample in enumerate(samples):
-        row = SAMPLE_START_ROW + i
+        row = get_sample_excel_row(i)
 
         print(
-            f"  Row {row}: "
+            f"  Sample {i + 1}, row {row}: "
             f"{SAMPLE_NAME_COLUMN}{row} = {sample['sample_name']}, "
             f"{SAMPLE_CONCENTRATION_COLUMN}{row} = "
             f"{sample['Concentracion']:.5f}"
