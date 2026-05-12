@@ -26,10 +26,6 @@ OUTPUT_DIR = "output"
 
 TARGET_SHEET = "P_DIS"
 
-# Sheet where C37 and K37 are located.
-# Change this if those cells are in another sheet.
-REPORT_SHEET = "Resultados"
-
 DATE_CELL = "T12"
 
 # Excel columns in P_DIS:
@@ -40,7 +36,7 @@ A882_COLUMN = "H"
 
 START_ROW = 15
 
-# Sample output location
+# Sample output location in P_DIS
 SAMPLE_NAME_COLUMN = "C"
 SAMPLE_CONCENTRATION_COLUMN = "K"
 SAMPLE_START_ROW = 37
@@ -497,9 +493,22 @@ def write_standard_values(ws, standards):
         ws[f"{A882_COLUMN}{row}"].number_format = "0.00000"
 
 
+def clear_old_sample_values(ws, max_rows=300):
+    """
+    Optional cleanup before writing new samples.
+
+    Clears old values from:
+        C37:C...
+        K37:K...
+    """
+    for row in range(SAMPLE_START_ROW, SAMPLE_START_ROW + max_rows):
+        ws[f"{SAMPLE_NAME_COLUMN}{row}"] = None
+        ws[f"{SAMPLE_CONCENTRATION_COLUMN}{row}"] = None
+
+
 def write_sample_values(ws, samples):
     """
-    Writes all samples starting at:
+    Writes all samples in P_DIS starting at:
 
         C37 = sample name
         K37 = concentration
@@ -509,6 +518,8 @@ def write_sample_values(ws, samples):
         C39 / K39
         ...
     """
+    clear_old_sample_values(ws)
+
     for i, sample in enumerate(samples):
         row = SAMPLE_START_ROW + i
 
@@ -580,25 +591,18 @@ def update_report(input_xlsm, csv_file, image_dir):
 
         raise KeyError(f"Target sheet not found: {TARGET_SHEET}")
 
-    if REPORT_SHEET not in wb.sheetnames:
-        print("Available sheets:")
-        for sheet in wb.sheetnames:
-            print(repr(sheet))
+    # Everything goes into P_DIS
+    ws = wb[TARGET_SHEET]
 
-        raise KeyError(f"Report sheet not found: {REPORT_SHEET}")
+    # Date in P_DIS
+    ws[DATE_CELL] = date_value
+    ws[DATE_CELL].number_format = "dd/mm/yyyy"
 
-    ws_standards = wb[TARGET_SHEET]
-    ws_report = wb[REPORT_SHEET]
+    # Standards 1-7 into P_DIS F15:F21 and H15:H21
+    write_standard_values(ws, standards)
 
-    # Date
-    ws_standards[DATE_CELL] = date_value
-    ws_standards[DATE_CELL].number_format = "dd/mm/yyyy"
-
-    # Standards 1-7
-    write_standard_values(ws_standards, standards)
-
-    # Samples from CSV into C37/K37 downward
-    write_sample_values(ws_report, samples)
+    # Samples into P_DIS C37/K37 downward
+    write_sample_values(ws, samples)
 
     # Reinsert fixed images
     reinsert_images(wb, image_dir=image_dir)
@@ -621,7 +625,7 @@ def update_report(input_xlsm, csv_file, image_dir):
             f"{standards[standard_number]['A882']:.5f}"
         )
 
-    print("\nSamples written:")
+    print("\nSamples written in P_DIS:")
     for i, sample in enumerate(samples):
         row = SAMPLE_START_ROW + i
 
