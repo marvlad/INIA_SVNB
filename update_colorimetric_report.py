@@ -504,7 +504,7 @@ def reinsert_images(wb, image_dir):
             #   ("image4.png", "N19", 0.55)
             # New:
             #   0.55 / 2 = 0.275
-            ("image4.png", "S19", 0.275),
+            ("image4.png", "S20", 0.385),
         ],
 
         "Resultados": [
