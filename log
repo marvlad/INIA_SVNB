@@ -1,0 +1,26 @@
+Selected method:
+  Bray
+
+Selected template:
+  template\F-82 Reporte de Resultados Colorimetricos Ver.05 Bray.xlsm
+
+Output directory:
+  output\bray
+
+CSV files listed in input.dat:
+
+
+STDERR:
+Traceback (most recent call last):
+  File "D:\FOSFORO\2026\PYTHON\INIA_SVNB\update_colorimetric_report.py", line 835, in <module>
+    main()
+    ~~~~^^
+  File "D:\FOSFORO\2026\PYTHON\INIA_SVNB\update_colorimetric_report.py", line 791, in main
+    csv_names = read_input_dat(input_dat)
+  File "D:\FOSFORO\2026\PYTHON\INIA_SVNB\update_colorimetric_report.py", line 215, in read_input_dat
+    print(f"  {csv_name}")
+    ~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\LUIS GONZA\AppData\Local\Python\pythoncore-3.14-64\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u0301' in position 15: character maps to <undefined>
