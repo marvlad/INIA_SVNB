@@ -496,32 +496,24 @@ def reinsert_images(wb, image_dir):
     images_by_sheet = {
         "P_DIS": [
             # Top-left images.
-            # Original:
-            #   image2.jpeg = 0.23
-            #   image3.png  = 0.33
-            #
-            # First increase by 30%:
-            #   0.23 * 1.30 = 0.299
-            #   0.33 * 1.30 = 0.429
-            #
-            # Then another 20% bigger:
-            #   0.299 * 1.20 = 0.3588
-            #   0.429 * 1.20 = 0.5148
-            ("image2.jpeg", "A1", 0.3588),
-            ("image3.png", "A3", 0.5148),
+            # Moved one column to the right:
+            #   A1 -> B1
+            #   A3 -> B3
+            ("image2.jpeg", "B1", 0.3588),
+            ("image3.png", "B3", 0.5148),
 
             # Equation image unchanged
             ("image4.png", "N19", 0.55),
         ],
 
         "Resultados": [
-            ("image2.jpeg", "A1", 0.3588),
-            ("image3.png", "A3", 0.5148),
+            ("image2.jpeg", "B1", 0.3588),
+            ("image3.png", "B3", 0.5148),
         ],
 
         "Datos": [
-            ("image2.jpeg", "A1", 0.3588),
-            ("image3.png", "A3", 0.5148),
+            ("image2.jpeg", "B1", 0.3588),
+            ("image3.png", "B3", 0.5148),
         ],
     }
 
