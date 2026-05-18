@@ -1,4 +1,4 @@
-# build_ph_database_from_excel_files.py
+# build_ph_database_from_excel_files_Ver03_only.py
 
 from pathlib import Path
 import re
@@ -13,9 +13,12 @@ from openpyxl import load_workbook
 
 PH_FOLDER = r"G:\Mi unidad\LABSAF ILLPA\1. Documentos Internos\7.5 Registros Tecnicos\2026\SUELOS\1.pH"
 
-DATABASE_FILE = r"G:\Mi unidad\LABSAF ILLPA\ph_database.sqlite"
+DATABASE_FILE = r"G:\Mi unidad\LABSAF ILLPA\ph_database_Ver03.sqlite"
 
-CSV_FILE = r"G:\Mi unidad\LABSAF ILLPA\ph_database.csv"
+CSV_FILE = r"G:\Mi unidad\LABSAF ILLPA\ph_database_Ver03.csv"
+
+# Only files containing this text in the filename will be read
+FILE_NAME_FILTER = "Ver.03"
 
 # pH Excel tab
 PH_SHEET_NAME = "F-103"
@@ -79,9 +82,6 @@ def normalize_text(value):
 
 
 def normalize_code(value):
-    """
-    Normalize SU code from column C.
-    """
     return normalize_text(value).upper()
 
 
@@ -279,6 +279,40 @@ def insert_record(
 
 
 # ============================================================
+# FILE FILTER
+# ============================================================
+
+def get_ver03_excel_files(ph_folder):
+    """
+    Return only .xlsx/.xlsm files whose name contains Ver.03.
+    Case-insensitive.
+    """
+    all_excel_files = sorted(
+        list(ph_folder.glob("*.xlsx")) +
+        list(ph_folder.glob("*.xlsm"))
+    )
+
+    filtered_files = [
+        path for path in all_excel_files
+        if FILE_NAME_FILTER.upper() in path.name.upper()
+    ]
+
+    print("")
+    print("File filter:")
+    print(f"  Only reading files containing: {FILE_NAME_FILTER}")
+    print(f"  Total Excel files found: {len(all_excel_files)}")
+    print(f"  Ver.03 files selected:   {len(filtered_files)}")
+
+    if VERBOSE:
+        print("")
+        print("Selected files:")
+        for path in filtered_files:
+            print(f"  - {path.name}")
+
+    return filtered_files
+
+
+# ============================================================
 # MAIN BUILDER
 # ============================================================
 
@@ -289,7 +323,7 @@ def build_ph_database():
 
     print("")
     print("============================================================")
-    print("BUILDING PH DATABASE FROM EXCEL FILES")
+    print("BUILDING PH DATABASE FROM Ver.03 EXCEL FILES ONLY")
     print("============================================================")
     print("pH folder:")
     print(f"  {ph_folder}")
@@ -299,6 +333,8 @@ def build_ph_database():
     print(f"  {csv_path}")
     print("pH sheet:")
     print(f"  {PH_SHEET_NAME}")
+    print("Filename filter:")
+    print(f"  {FILE_NAME_FILTER}")
     print("Columns:")
     print(f"  {PH_DUPLICATE_COL} = duplicate")
     print(f"  {PH_CODE_COL} = code")
@@ -313,13 +349,7 @@ def build_ph_database():
     if not ph_folder.exists():
         raise FileNotFoundError(f"pH folder not found: {ph_folder}")
 
-    excel_files = sorted(
-        list(ph_folder.glob("*.xlsx")) +
-        list(ph_folder.glob("*.xlsm"))
-    )
-
-    print("")
-    print(f"Excel files found: {len(excel_files)}")
+    excel_files = get_ver03_excel_files(ph_folder)
 
     conn = create_database(db_path)
 
@@ -345,7 +375,7 @@ def build_ph_database():
     for file_index, excel_file in enumerate(excel_files, start=1):
         print("")
         print("============================================================")
-        print(f"[{file_index}/{len(excel_files)}] ACCESSING EXCEL FILE")
+        print(f"[{file_index}/{len(excel_files)}] ACCESSING Ver.03 EXCEL FILE")
         print("============================================================")
         print("File:")
         print(f"  {excel_file}")
@@ -398,29 +428,21 @@ def build_ph_database():
                 print(f"  {ph_cell} ph raw          = {raw_ph!r} -> {ph!r}")
                 print(f"  Extracted SU number       = {su_number}")
 
-                # ------------------------------------------------------------
-                # IMPORTANT NEW RULE
-                # ------------------------------------------------------------
-                # If there is no SU/code in column C, this means the file ended.
-                # Stop this file and move on to the next Excel file.
-                # ------------------------------------------------------------
                 if code == "":
                     print("")
                     print("  STOP FILE:")
                     print(f"    No code/SU found in {code_cell}.")
                     print("    This means the data ended in this file.")
-                    print("    Moving to the next pH Excel file.")
+                    print("    Moving to the next Ver.03 pH Excel file.")
                     stopped_by_empty_code = True
                     total_files_stopped_by_empty_code += 1
                     break
 
-                # If column C has text, but it does not contain SU, skip only this row.
                 if su_number is None:
                     print("  SKIPPED ROW: code exists, but no SU number found.")
                     file_skipped += 1
                     continue
 
-                # If pH is empty, skip only this row.
                 if ph == "":
                     print("  SKIPPED ROW: empty pH.")
                     file_skipped += 1
