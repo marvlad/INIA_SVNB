@@ -1,7 +1,8 @@
-# copy_ph_no_marker_use_max_duplicate.py
+# fill_input_xlsm_from_ph_csv.py
 
 from pathlib import Path
 import re
+import csv
 import shutil
 from openpyxl import load_workbook
 
@@ -10,32 +11,31 @@ from openpyxl import load_workbook
 # CONFIGURATION
 # ============================================================
 
-INPUT_XLSM = r"G:\Mi unidad\LABSAF ILLPA\input.xlsm"
+INPUT_XLSM = Path(
+    r"G:\Mi unidad\LABSAF ILLPA\input.xlsm"
+)
 
-PH_FOLDER = r"G:\Mi unidad\LABSAF ILLPA\1. Documentos Internos\7.5 Registros Tecnicos\2026\SUELOS\1.pH"
+PH_CSV = Path(
+    r"G:\Mi unidad\LABSAF ILLPA\ph_database_Ver03.csv"
+)
 
-OUTPUT_XLSM = r"G:\Mi unidad\LABSAF ILLPA\input_WITH_PH.xlsm"
+OUTPUT_XLSM = Path(
+    r"G:\Mi unidad\LABSAF ILLPA\input_WITH_PH_FROM_CSV.xlsm"
+)
 
-# Input file tab
+# Input workbook tab
 INPUT_SHEET_NAME = "P_DIS"
 
-# pH file tab
-PH_SHEET_NAME = "F-103"
-
-# ------------------------------------------------------------
-# Input file structure
-# ------------------------------------------------------------
-# We ignore the D rows:
-#   36, 59, 82, 105, ...
-#
-# We read only:
+# Input structure:
+# Read:
 #   C37:C56
 #   C60:C79
 #   C83:C102
 #   C106:C125
 #   ...
-# ------------------------------------------------------------
-
+#
+# Ignore D rows:
+#   36, 59, 82, 105, ...
 INPUT_FIRST_ROW = 37
 BLOCK_SIZE = 20
 GAP_ROWS = 3
@@ -43,19 +43,11 @@ GAP_ROWS = 3
 INPUT_CODE_COL = "C"
 INPUT_OUTPUT_COL = "E"
 
-# ------------------------------------------------------------
-# pH file structure
-# ------------------------------------------------------------
-
-PH_FIRST_ROW = 27
-PH_CODE_COL = "C"
-PH_VALUE_COL = "H"
-
 VERBOSE = True
 
 
 # ============================================================
-# VERBOSE PRINT
+# PRINT HELPER
 # ============================================================
 
 def vprint(message):
@@ -64,12 +56,12 @@ def vprint(message):
 
 
 # ============================================================
-# NORMALIZATION FUNCTIONS
+# NORMALIZATION
 # ============================================================
 
 def normalize_text(value):
     """
-    Clean Excel text.
+    Clean text.
 
     Handles:
         SU1149-ILL-26
@@ -77,7 +69,7 @@ def normalize_text(value):
         spaces
         non-breaking spaces
 
-    The apostrophe in front is ignored.
+    The leading apostrophe is ignored.
     """
     if value is None:
         return ""
@@ -86,10 +78,7 @@ def normalize_text(value):
     text = text.replace("\xa0", " ")
     text = re.sub(r"\s+", " ", text)
 
-    # Important:
-    # Excel sometimes stores text as:
-    #   'SU1149-ILL-26
-    # We ignore the leading apostrophe.
+    # Ignore leading Excel apostrophe
     text = text.lstrip("'").strip()
 
     return text
@@ -98,24 +87,18 @@ def normalize_text(value):
 def normalize_code(value):
     """
     Normalize SU code.
-
-    Examples:
-        SU1149-ILL-26    -> SU1149-ILL-26
-        'SU1149-ILL-26   -> SU1149-ILL-26
-        su1149-ill-26    -> SU1149-ILL-26
     """
     return normalize_text(value).upper()
 
 
 def extract_su_number(value):
     """
-    Extract the numeric SU number.
+    Extract numeric SU number.
 
     Examples:
-        SU1149-ILL-26    -> 1149
-        'SU1149-ILL-26   -> 1149
-        SU0079           -> 79
-        SU10747          -> 10747
+        SU1149-ILL-26   -> 1149
+        'SU1149-ILL-26  -> 1149
+        SU0079          -> 79
     """
     text = normalize_code(value)
 
@@ -127,26 +110,30 @@ def extract_su_number(value):
     return int(match.group(1))
 
 
-def parse_float(value):
+def parse_ph(value):
     """
-    Convert pH value to float.
+    Convert pH to float.
 
     Handles:
         7.5
+        7,5
         "7.5"
-        "7,5"
 
-    Returns None if conversion fails.
+    Invalid:
+        ""
+        "-"
+        "---"
+        "NO DATA"
     """
-    if value is None:
-        return None
-
     text = normalize_text(value)
 
     if text == "":
         return None
 
     text = text.replace(",", ".")
+
+    if set(text) <= {"-"}:
+        return None
 
     try:
         return float(text)
@@ -155,91 +142,192 @@ def parse_float(value):
 
 
 # ============================================================
-# FILE RANGE FUNCTIONS
+# CSV COLUMN HELPERS
 # ============================================================
 
-def extract_su_ranges_from_filename(filename):
+def find_column(fieldnames, possible_names):
     """
-    Extract SU ranges from filenames.
-
-    Supported examples:
-        SU0668-0767.xlsx
-        SU0597-0602- SU0608-0667.xlsx
-        SU1144-1175.xlsx
-        SU10268-10269.xlsx
-
-    Returns:
-        [(668, 767)]
-        [(597, 602), (608, 667)]
-        [(1144, 1175)]
+    Find a column using several possible names, case-insensitive.
     """
-    text = normalize_text(filename).upper()
+    normalized = {
+        name.strip().lower(): name
+        for name in fieldnames
+    }
 
-    pattern = r"SU\s*0*(\d+)\s*-\s*0*(\d+)"
+    for possible in possible_names:
+        key = possible.strip().lower()
+        if key in normalized:
+            return normalized[key]
 
-    ranges = []
-
-    for start, end in re.findall(pattern, text):
-        start = int(start)
-        end = int(end)
-
-        if start <= end:
-            ranges.append((start, end))
-        else:
-            ranges.append((end, start))
-
-    return ranges
+    return None
 
 
-def find_probable_ph_files(ph_folder, su_number):
+# ============================================================
+# BUILD LOOKUP FROM CSV
+# ============================================================
+
+def build_ph_lookup_from_csv(csv_path):
     """
-    Find pH files whose filename range includes the SU number.
+    Read ph_database_Ver03.csv and build:
+
+        su_number -> best record
+
+    If the same SU appears more than once, keep the largest pH.
     """
-    ph_folder = Path(ph_folder)
+    print("")
+    print("============================================================")
+    print("READING pH CSV DATABASE")
+    print("============================================================")
+    print("CSV file:")
+    print(f"  {csv_path}")
 
-    if not ph_folder.exists():
-        raise FileNotFoundError(f"pH folder not found: {ph_folder}")
+    if not csv_path.exists():
+        raise FileNotFoundError(f"pH CSV not found: {csv_path}")
 
-    excel_files = sorted(
-        list(ph_folder.glob("*.xlsx")) +
-        list(ph_folder.glob("*.xlsm"))
-    )
+    lookup = {}
 
-    candidates = []
+    total_rows = 0
+    inserted_rows = 0
+    skipped_rows = 0
+    duplicate_replaced = 0
+    duplicate_kept = 0
+
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+
+        if reader.fieldnames is None:
+            raise ValueError("CSV file has no header row.")
+
+        print("")
+        print("Detected CSV columns:")
+        for col in reader.fieldnames:
+            print(f"  - {col}")
+
+        code_col = find_column(
+            reader.fieldnames,
+            ["code", "su_code", "SU_CODE", "codigo", "código"]
+        )
+
+        ph_col = find_column(
+            reader.fieldnames,
+            ["ph", "PH", "ph_value", "PH_VALUE"]
+        )
+
+        source_file_col = find_column(
+            reader.fieldnames,
+            ["source_file", "SOURCE_FILE"]
+        )
+
+        source_row_col = find_column(
+            reader.fieldnames,
+            ["source_row", "SOURCE_ROW"]
+        )
+
+        if code_col is None:
+            raise ValueError(
+                "Could not find code column in CSV. "
+                "Expected one of: code, su_code, SU_CODE, codigo."
+            )
+
+        if ph_col is None:
+            raise ValueError(
+                "Could not find pH column in CSV. "
+                "Expected one of: ph, PH, ph_value, PH_VALUE."
+            )
+
+        print("")
+        print(f"Using code column: {code_col}")
+        print(f"Using pH column:   {ph_col}")
+
+        for csv_row_number, row in enumerate(reader, start=2):
+            total_rows += 1
+
+            raw_code = row.get(code_col, "")
+            raw_ph = row.get(ph_col, "")
+
+            code = normalize_code(raw_code)
+            su_number = extract_su_number(code)
+            ph = parse_ph(raw_ph)
+
+            source_file = row.get(source_file_col, "") if source_file_col else ""
+            source_row = row.get(source_row_col, "") if source_row_col else ""
+
+            if VERBOSE:
+                print("")
+                print(f"CSV row {csv_row_number}:")
+                print(f"  code raw = {raw_code!r} -> {code!r}")
+                print(f"  SU number = {su_number}")
+                print(f"  pH raw = {raw_ph!r} -> {ph}")
+                print(f"  source file = {source_file}")
+                print(f"  source row  = {source_row}")
+
+            if code == "":
+                print("  SKIPPED CSV ROW: empty code")
+                skipped_rows += 1
+                continue
+
+            if su_number is None:
+                print("  SKIPPED CSV ROW: no SU number")
+                skipped_rows += 1
+                continue
+
+            if ph is None:
+                print("  SKIPPED CSV ROW: invalid pH")
+                skipped_rows += 1
+                continue
+
+            record = {
+                "su_number": su_number,
+                "code": code,
+                "ph": ph,
+                "source_file": source_file,
+                "source_row": source_row,
+                "csv_row": csv_row_number,
+            }
+
+            if su_number not in lookup:
+                lookup[su_number] = record
+                inserted_rows += 1
+
+                if VERBOSE:
+                    print("  INSERTED INTO LOOKUP")
+
+            else:
+                old_record = lookup[su_number]
+
+                if ph > old_record["ph"]:
+                    lookup[su_number] = record
+                    duplicate_replaced += 1
+
+                    print("")
+                    print("  DUPLICATE SU FOUND:")
+                    print(f"    SU{su_number}")
+                    print(f"    Old pH: {old_record['ph']} from {old_record['source_file']}")
+                    print(f"    New pH: {ph} from {source_file}")
+                    print("    Selected new value because it is larger.")
+
+                else:
+                    duplicate_kept += 1
+
+                    print("")
+                    print("  DUPLICATE SU FOUND:")
+                    print(f"    SU{su_number}")
+                    print(f"    Existing pH: {old_record['ph']} from {old_record['source_file']}")
+                    print(f"    New pH: {ph} from {source_file}")
+                    print("    Kept existing value because it is larger or equal.")
 
     print("")
-    print("Looking for probable pH file by filename range...")
-    print(f"  SU number: SU{su_number}")
-    print(f"  Folder: {ph_folder}")
-    print(f"  Excel files found: {len(excel_files)}")
+    print("============================================================")
+    print("CSV LOOKUP BUILD FINISHED")
+    print("============================================================")
+    print(f"Total CSV rows read:     {total_rows}")
+    print(f"Inserted unique SUs:     {inserted_rows}")
+    print(f"Skipped CSV rows:        {skipped_rows}")
+    print(f"Duplicates replaced:     {duplicate_replaced}")
+    print(f"Duplicates kept:         {duplicate_kept}")
+    print(f"Final lookup size:       {len(lookup)}")
 
-    for excel_file in excel_files:
-        ranges = extract_su_ranges_from_filename(excel_file.name)
-
-        if not ranges:
-            if VERBOSE:
-                print("")
-                print(f"  File: {excel_file.name}")
-                print("    No SU range found in filename.")
-            continue
-
-        if VERBOSE:
-            print("")
-            print(f"  File: {excel_file.name}")
-
-        for start, end in ranges:
-            if VERBOSE:
-                print(f"    Range detected: SU{start} to SU{end}")
-
-            if start <= su_number <= end:
-                print("")
-                print("  Candidate found:")
-                print(f"    File: {excel_file.name}")
-                print(f"    Range: SU{start} to SU{end}")
-                print(f"    SU{su_number} is inside this range.")
-                candidates.append(excel_file)
-
-    return candidates
+    return lookup
 
 
 # ============================================================
@@ -248,7 +336,7 @@ def find_probable_ph_files(ph_folder, su_number):
 
 def iter_input_rows(ws):
     """
-    Generate input rows in this pattern:
+    Generate input rows:
 
         37 to 56
         60 to 79
@@ -258,8 +346,6 @@ def iter_input_rows(ws):
 
     This ignores the D rows:
         36, 59, 82, 105, ...
-
-    We only read the 20 sample rows after each D row.
     """
     row = INPUT_FIRST_ROW
 
@@ -267,10 +353,10 @@ def iter_input_rows(ws):
         block_start = row
         block_end = row + BLOCK_SIZE - 1
 
-        vprint("")
-        vprint("------------------------------------------------------------")
-        vprint(f"Input block: rows {block_start} to {block_end}")
-        vprint("------------------------------------------------------------")
+        print("")
+        print("------------------------------------------------------------")
+        print(f"Input block: rows {block_start} to {block_end}")
+        print("------------------------------------------------------------")
 
         for r in range(block_start, min(block_end, ws.max_row) + 1):
             yield r
@@ -293,240 +379,58 @@ def get_sheet(workbook, sheet_name):
 
 
 # ============================================================
-# SEARCH pH FILE
+# FILL INPUT XLSM
 # ============================================================
 
-def search_su_in_ph_file(ph_file, input_code, input_su_number):
-    """
-    Search one pH file for the SU code.
-
-    It ignores column B completely.
-
-    If the SU appears multiple times, it returns the largest pH value.
-    """
-    print("")
-    print("Opening probable pH file:")
-    print(f"  {ph_file}")
-
-    wb = load_workbook(ph_file, data_only=True, read_only=True)
-
-    if PH_SHEET_NAME not in wb.sheetnames:
-        wb.close()
-        raise ValueError(
-            f"Sheet '{PH_SHEET_NAME}' not found in file {ph_file.name}. "
-            f"Available sheets: {wb.sheetnames}"
-        )
-
-    ws = wb[PH_SHEET_NAME]
-
-    print(f"Accessing pH sheet: {PH_SHEET_NAME}")
-    print(f"Searching from row {PH_FIRST_ROW} to {ws.max_row}")
-    print(f"Looking for input code: {input_code}")
-    print(f"Looking for SU number: {input_su_number}")
-    print("Ignoring column B completely.")
-
-    matches = []
-
-    for row in range(PH_FIRST_ROW, ws.max_row + 1):
-        raw_code = ws[f"{PH_CODE_COL}{row}"].value
-        raw_ph = ws[f"{PH_VALUE_COL}{row}"].value
-
-        ph_code = normalize_code(raw_code)
-        ph_su_number = extract_su_number(ph_code)
-        ph_value_float = parse_float(raw_ph)
-
-        if VERBOSE:
-            print(
-                f"  Row {row}: "
-                f"C={raw_code!r}->{ph_code!r}, "
-                f"SU={ph_su_number}, "
-                f"H={raw_ph!r}->{ph_value_float}"
-            )
-
-        if ph_su_number is None:
-            continue
-
-        if ph_su_number != input_su_number:
-            continue
-
-        print("")
-        print("  SU MATCH FOUND:")
-        print(f"    pH row: {row}")
-        print(f"    pH code C raw: {raw_code!r}")
-        print(f"    pH code C normalized: {ph_code}")
-        print(f"    pH value H raw: {raw_ph!r}")
-        print(f"    pH value numeric: {ph_value_float}")
-
-        if ph_value_float is None:
-            print("    WARNING: pH value could not be converted to number. Skipping this match.")
-            continue
-
-        matches.append(
-            {
-                "row": row,
-                "code": ph_code,
-                "ph_raw": raw_ph,
-                "ph_float": ph_value_float,
-                "source_file": ph_file.name,
-            }
-        )
-
-    wb.close()
-
-    if not matches:
-        print("")
-        print("No usable pH match found in this file.")
-        return None
-
-    print("")
-    print("Matches found in this pH file:")
-    for match in matches:
-        print(
-            f"  Row {match['row']} | "
-            f"C={match['code']} | "
-            f"H raw={match['ph_raw']} | "
-            f"H numeric={match['ph_float']}"
-        )
-
-    # If duplicated, use the biggest pH value.
-    best_match = max(matches, key=lambda m: m["ph_float"])
-
-    print("")
-    print("Selected match from this file:")
-    print("  Rule: if duplicated, use the biggest pH value.")
-    print(f"  Selected row: {best_match['row']}")
-    print(f"  Selected pH: {best_match['ph_float']}")
-    print(f"  Selected source file: {best_match['source_file']}")
-
-    return best_match
-
-
-def find_ph_for_input_code(input_code):
-    """
-    Find pH value for one input SU code.
-
-    Steps:
-        1. Extract SU number from input code.
-        2. Find probable pH file by filename range.
-        3. Open candidate pH file.
-        4. Search SU in F-103 column C.
-        5. If duplicates are found, return biggest pH value.
-    """
-    input_code_norm = normalize_code(input_code)
-    input_su_number = extract_su_number(input_code_norm)
-
-    if input_code_norm == "":
-        return None
-
-    if input_su_number is None:
-        print(f"Could not extract SU number from input code: {input_code!r}")
-        return None
-
+def fill_input_xlsm_from_lookup(ph_lookup):
     print("")
     print("============================================================")
-    print("SEARCHING PH FOR INPUT CODE")
+    print("FILLING INPUT XLSM FROM pH CSV LOOKUP")
     print("============================================================")
-    print(f"Input code raw: {input_code!r}")
-    print(f"Normalized input code: {input_code_norm}")
-    print(f"Extracted SU number: {input_su_number}")
-
-    candidates = find_probable_ph_files(PH_FOLDER, input_su_number)
-
-    if not candidates:
-        print("")
-        print(f"No probable pH file found for SU{input_su_number}.")
-        return None
-
-    all_matches = []
-
-    for candidate in candidates:
-        match = search_su_in_ph_file(
-            ph_file=candidate,
-            input_code=input_code_norm,
-            input_su_number=input_su_number,
-        )
-
-        if match is not None:
-            all_matches.append(match)
-
-    if not all_matches:
-        print("")
-        print(f"No pH value found inside candidate file(s) for SU{input_su_number}.")
-        return None
-
-    # If for some reason the SU appears in more than one candidate file,
-    # also select the biggest pH value across all candidate files.
-    best_match = max(all_matches, key=lambda m: m["ph_float"])
-
-    print("")
-    print("FINAL SELECTED pH FOR THIS INPUT CODE")
-    print(f"  Input code: {input_code_norm}")
-    print(f"  Selected pH: {best_match['ph_float']}")
-    print(f"  Source file: {best_match['source_file']}")
-    print(f"  Source row: {best_match['row']}")
-
-    return best_match
-
-
-# ============================================================
-# MAIN FILL FUNCTION
-# ============================================================
-
-def main():
-    input_path = Path(INPUT_XLSM)
-    output_path = Path(OUTPUT_XLSM)
-
-    print("")
-    print("============================================================")
-    print("STARTING pH COPY PROCESS WITHOUT COLUMN B / D")
-    print("============================================================")
-    print("Input file:")
-    print(f"  {input_path}")
+    print("Input XLSM:")
+    print(f"  {INPUT_XLSM}")
     print("Input sheet:")
     print(f"  {INPUT_SHEET_NAME}")
-    print("pH folder:")
-    print(f"  {PH_FOLDER}")
-    print("pH sheet:")
-    print(f"  {PH_SHEET_NAME}")
-    print("Output file:")
-    print(f"  {output_path}")
+    print("Output XLSM:")
+    print(f"  {OUTPUT_XLSM}")
+    print("Reading input rows:")
+    print("  C37:C56, C60:C79, C83:C102, ...")
+    print("Writing pH to:")
+    print("  E37:E56, E60:E79, E83:E102, ...")
     print("============================================================")
 
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input file not found: {input_path}")
+    if not INPUT_XLSM.exists():
+        raise FileNotFoundError(f"Input XLSM not found: {INPUT_XLSM}")
+
+    if not INPUT_XLSM.parent.exists():
+        raise FileNotFoundError(f"Input folder not found: {INPUT_XLSM.parent}")
 
     print("")
     print("Copying input XLSM to output XLSM...")
-    shutil.copy2(input_path, output_path)
-    print("Copy done.")
-    print(f"Output copy created:")
-    print(f"  {output_path}")
+    shutil.copy2(INPUT_XLSM, OUTPUT_XLSM)
+    print("Copy created:")
+    print(f"  {OUTPUT_XLSM}")
 
     print("")
     print("Opening input workbook for reading values...")
-    wb_values = load_workbook(input_path, data_only=True, keep_vba=True)
+    wb_values = load_workbook(INPUT_XLSM, data_only=True, keep_vba=True)
     ws_values = get_sheet(wb_values, INPUT_SHEET_NAME)
 
-    print("Input workbook opened.")
     print(f"Input sheet used: {ws_values.title}")
     print(f"Input max row: {ws_values.max_row}")
 
     print("")
     print("Opening output workbook for writing values...")
-    wb_out = load_workbook(output_path, keep_vba=True)
+    wb_out = load_workbook(OUTPUT_XLSM, keep_vba=True)
     ws_out = get_sheet(wb_out, INPUT_SHEET_NAME)
 
-    print("Output workbook opened.")
-    print(f"Output sheet used: {ws_out.title}")
+    written = 0
+    not_found = 0
+    skipped = 0
 
     log = []
 
     for row in iter_input_rows(ws_values):
-        print("")
-        print("============================================================")
-        print(f"INPUT ROW {row}")
-        print("============================================================")
-
         input_cell = f"{INPUT_CODE_COL}{row}"
         output_cell = f"{INPUT_OUTPUT_COL}{row}"
 
@@ -534,21 +438,29 @@ def main():
         code = normalize_code(raw_code)
         su_number = extract_su_number(code)
 
-        print(f"Reading input cell {input_cell}:")
-        print(f"  Raw value: {raw_code!r}")
+        print("")
+        print("============================================================")
+        print(f"INPUT ROW {row}")
+        print("============================================================")
+        print(f"Reading {input_cell}:")
+        print(f"  Raw code:        {raw_code!r}")
         print(f"  Normalized code: {code!r}")
-        print(f"  Extracted SU number: {su_number}")
+        print(f"  SU number:       {su_number}")
 
         if code == "":
-            print("Empty code. Skipping.")
+            print("  SKIPPED: empty input code")
+            skipped += 1
             continue
 
         if su_number is None:
-            print("Could not extract SU number. Skipping.")
+            print("  SKIPPED: no SU number found")
+            skipped += 1
+
             log.append(
                 {
                     "row": row,
                     "code": code,
+                    "su_number": "",
                     "ph": "",
                     "status": "SKIPPED: no SU number",
                     "source_file": "",
@@ -557,15 +469,15 @@ def main():
             )
             continue
 
-        match = find_ph_for_input_code(code)
+        if su_number not in ph_lookup:
+            print("  NOT FOUND in ph_database_Ver03.csv lookup")
+            not_found += 1
 
-        if match is None:
-            print("")
-            print("No pH found for this input row.")
             log.append(
                 {
                     "row": row,
                     "code": code,
+                    "su_number": su_number,
                     "ph": "",
                     "status": "NOT FOUND",
                     "source_file": "",
@@ -574,39 +486,52 @@ def main():
             )
             continue
 
-        ph_value = match["ph_float"]
+        record = ph_lookup[su_number]
+        ph = record["ph"]
+
+        print("  FOUND pH:")
+        print(f"    pH:          {ph}")
+        print(f"    CSV code:    {record['code']}")
+        print(f"    Source file: {record['source_file']}")
+        print(f"    Source row:  {record['source_row']}")
+        print(f"    CSV row:     {record['csv_row']}")
 
         print("")
-        print("Writing pH value to output workbook:")
-        print(f"  Destination cell: {output_cell}")
-        print(f"  Value: {ph_value}")
+        print("  Writing to output workbook:")
+        print(f"    Destination cell: {output_cell}")
+        print(f"    Value: {ph}")
 
-        ws_out[output_cell] = ph_value
+        ws_out[output_cell] = ph
+        written += 1
 
         log.append(
             {
                 "row": row,
                 "code": code,
-                "ph": ph_value,
+                "su_number": su_number,
+                "ph": ph,
                 "status": "OK",
-                "source_file": match["source_file"],
-                "source_row": match["row"],
+                "source_file": record["source_file"],
+                "source_row": record["source_row"],
             }
         )
 
     print("")
     print("Saving output workbook...")
-    wb_out.save(output_path)
+    wb_out.save(OUTPUT_XLSM)
 
     wb_values.close()
     wb_out.close()
 
     print("")
     print("============================================================")
-    print("FINISHED")
+    print("FILLING FINISHED")
     print("============================================================")
-    print("Output file created:")
-    print(f"  {output_path}")
+    print(f"Output file created:")
+    print(f"  {OUTPUT_XLSM}")
+    print(f"Written rows: {written}")
+    print(f"Not found:    {not_found}")
+    print(f"Skipped:      {skipped}")
 
     print("")
     print("FINAL SUMMARY")
@@ -616,11 +541,22 @@ def main():
         print(
             f"Row {item['row']:>4} | "
             f"C={item['code']:<25} | "
-            f"pH={str(item['ph']):<10} | "
+            f"SU={str(item['su_number']):<8} | "
+            f"pH={str(item['ph']):<8} | "
             f"{item['status']:<20} | "
             f"{item['source_file']} | "
             f"source row={item['source_row']}"
         )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    ph_lookup = build_ph_lookup_from_csv(PH_CSV)
+
+    fill_input_xlsm_from_lookup(ph_lookup)
 
 
 if __name__ == "__main__":
