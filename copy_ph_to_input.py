@@ -22,27 +22,31 @@ INPUT_SHEET_NAME = "P_DIS"
 # pH file tab
 PH_SHEET_NAME = "F-103"
 
+# ------------------------------------------------------------
 # Input file structure
-# Now we start at C37, not C36.
+# ------------------------------------------------------------
+# We ignore the D rows:
+#   36, 59, 82, 105, ...
+#
+# We read only:
+#   C37:C56
+#   C60:C79
+#   C83:C102
+#   C106:C125
+#   ...
+# ------------------------------------------------------------
+
 INPUT_FIRST_ROW = 37
-
-# Each useful block now has 20 sample rows:
-# 37 to 56
-# 60 to 79
-# 83 to 102
-# etc.
 BLOCK_SIZE = 20
-
-# After each block, skip 3 rows:
-# after 56, next is 60
-# after 79, next is 83
-# after 102, next is 106
 GAP_ROWS = 3
 
 INPUT_CODE_COL = "C"
 INPUT_OUTPUT_COL = "E"
 
+# ------------------------------------------------------------
 # pH file structure
+# ------------------------------------------------------------
+
 PH_FIRST_ROW = 27
 PH_CODE_COL = "C"
 PH_VALUE_COL = "H"
@@ -68,10 +72,12 @@ def normalize_text(value):
     Clean Excel text.
 
     Handles:
-        'SU1149-ILL-26
         SU1149-ILL-26
+        'SU1149-ILL-26
         spaces
         non-breaking spaces
+
+    The apostrophe in front is ignored.
     """
     if value is None:
         return ""
@@ -80,7 +86,10 @@ def normalize_text(value):
     text = text.replace("\xa0", " ")
     text = re.sub(r"\s+", " ", text)
 
-    # Remove Excel leading apostrophe
+    # Important:
+    # Excel sometimes stores text as:
+    #   'SU1149-ILL-26
+    # We ignore the leading apostrophe.
     text = text.lstrip("'").strip()
 
     return text
@@ -90,22 +99,25 @@ def normalize_code(value):
     """
     Normalize SU code.
 
-    Example:
-        'SU1149-ILL-26 -> SU1149-ILL-26
+    Examples:
+        SU1149-ILL-26    -> SU1149-ILL-26
+        'SU1149-ILL-26   -> SU1149-ILL-26
+        su1149-ill-26    -> SU1149-ILL-26
     """
     return normalize_text(value).upper()
 
 
 def extract_su_number(value):
     """
-    Extract SU number.
+    Extract the numeric SU number.
 
     Examples:
-        SU1149-ILL-26   -> 1149
-        'SU1149-ILL-26  -> 1149
-        SU0079          -> 79
+        SU1149-ILL-26    -> 1149
+        'SU1149-ILL-26   -> 1149
+        SU0079           -> 79
+        SU10747          -> 10747
     """
-    text = normalize_text(value).upper()
+    text = normalize_code(value)
 
     match = re.search(r"SU\s*0*(\d+)", text)
 
@@ -150,10 +162,11 @@ def extract_su_ranges_from_filename(filename):
     """
     Extract SU ranges from filenames.
 
-    Examples:
+    Supported examples:
         SU0668-0767.xlsx
         SU0597-0602- SU0608-0667.xlsx
         SU1144-1175.xlsx
+        SU10268-10269.xlsx
 
     Returns:
         [(668, 767)]
@@ -204,9 +217,20 @@ def find_probable_ph_files(ph_folder, su_number):
         ranges = extract_su_ranges_from_filename(excel_file.name)
 
         if not ranges:
+            if VERBOSE:
+                print("")
+                print(f"  File: {excel_file.name}")
+                print("    No SU range found in filename.")
             continue
 
+        if VERBOSE:
+            print("")
+            print(f"  File: {excel_file.name}")
+
         for start, end in ranges:
+            if VERBOSE:
+                print(f"    Range detected: SU{start} to SU{end}")
+
             if start <= su_number <= end:
                 print("")
                 print("  Candidate found:")
@@ -328,8 +352,10 @@ def search_su_in_ph_file(ph_file, input_code, input_su_number):
         print("")
         print("  SU MATCH FOUND:")
         print(f"    pH row: {row}")
-        print(f"    pH code C: {ph_code}")
-        print(f"    pH value H: {raw_ph}")
+        print(f"    pH code C raw: {raw_code!r}")
+        print(f"    pH code C normalized: {ph_code}")
+        print(f"    pH value H raw: {raw_ph!r}")
+        print(f"    pH value numeric: {ph_value_float}")
 
         if ph_value_float is None:
             print("    WARNING: pH value could not be converted to number. Skipping this match.")
@@ -353,20 +379,20 @@ def search_su_in_ph_file(ph_file, input_code, input_su_number):
         return None
 
     print("")
-    print("Matches found:")
+    print("Matches found in this pH file:")
     for match in matches:
         print(
             f"  Row {match['row']} | "
             f"C={match['code']} | "
-            f"H={match['ph_raw']} | "
-            f"numeric={match['ph_float']}"
+            f"H raw={match['ph_raw']} | "
+            f"H numeric={match['ph_float']}"
         )
 
     # If duplicated, use the biggest pH value.
     best_match = max(matches, key=lambda m: m["ph_float"])
 
     print("")
-    print("Selected match:")
+    print("Selected match from this file:")
     print("  Rule: if duplicated, use the biggest pH value.")
     print(f"  Selected row: {best_match['row']}")
     print(f"  Selected pH: {best_match['ph_float']}")
@@ -378,6 +404,13 @@ def search_su_in_ph_file(ph_file, input_code, input_su_number):
 def find_ph_for_input_code(input_code):
     """
     Find pH value for one input SU code.
+
+    Steps:
+        1. Extract SU number from input code.
+        2. Find probable pH file by filename range.
+        3. Open candidate pH file.
+        4. Search SU in F-103 column C.
+        5. If duplicates are found, return biggest pH value.
     """
     input_code_norm = normalize_code(input_code)
     input_su_number = extract_su_number(input_code_norm)
@@ -393,7 +426,7 @@ def find_ph_for_input_code(input_code):
     print("============================================================")
     print("SEARCHING PH FOR INPUT CODE")
     print("============================================================")
-    print(f"Input code: {input_code!r}")
+    print(f"Input code raw: {input_code!r}")
     print(f"Normalized input code: {input_code_norm}")
     print(f"Extracted SU number: {input_su_number}")
 
@@ -422,7 +455,7 @@ def find_ph_for_input_code(input_code):
         return None
 
     # If for some reason the SU appears in more than one candidate file,
-    # also select the biggest pH value across all matches.
+    # also select the biggest pH value across all candidate files.
     best_match = max(all_matches, key=lambda m: m["ph_float"])
 
     print("")
@@ -447,15 +480,15 @@ def main():
     print("============================================================")
     print("STARTING pH COPY PROCESS WITHOUT COLUMN B / D")
     print("============================================================")
-    print(f"Input file:")
+    print("Input file:")
     print(f"  {input_path}")
-    print(f"Input sheet:")
+    print("Input sheet:")
     print(f"  {INPUT_SHEET_NAME}")
-    print(f"pH folder:")
+    print("pH folder:")
     print(f"  {PH_FOLDER}")
-    print(f"pH sheet:")
+    print("pH sheet:")
     print(f"  {PH_SHEET_NAME}")
-    print(f"Output file:")
+    print("Output file:")
     print(f"  {output_path}")
     print("============================================================")
 
@@ -466,13 +499,15 @@ def main():
     print("Copying input XLSM to output XLSM...")
     shutil.copy2(input_path, output_path)
     print("Copy done.")
+    print(f"Output copy created:")
+    print(f"  {output_path}")
 
     print("")
     print("Opening input workbook for reading values...")
     wb_values = load_workbook(input_path, data_only=True, keep_vba=True)
     ws_values = get_sheet(wb_values, INPUT_SHEET_NAME)
 
-    print(f"Input workbook opened.")
+    print("Input workbook opened.")
     print(f"Input sheet used: {ws_values.title}")
     print(f"Input max row: {ws_values.max_row}")
 
@@ -480,6 +515,9 @@ def main():
     print("Opening output workbook for writing values...")
     wb_out = load_workbook(output_path, keep_vba=True)
     ws_out = get_sheet(wb_out, INPUT_SHEET_NAME)
+
+    print("Output workbook opened.")
+    print(f"Output sheet used: {ws_out.title}")
 
     log = []
 
@@ -567,7 +605,7 @@ def main():
     print("============================================================")
     print("FINISHED")
     print("============================================================")
-    print(f"Output file created:")
+    print("Output file created:")
     print(f"  {output_path}")
 
     print("")
@@ -579,7 +617,7 @@ def main():
             f"Row {item['row']:>4} | "
             f"C={item['code']:<25} | "
             f"pH={str(item['ph']):<10} | "
-            f"{item['status']:<12} | "
+            f"{item['status']:<20} | "
             f"{item['source_file']} | "
             f"source row={item['source_row']}"
         )
