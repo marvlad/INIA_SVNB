@@ -1,72 +1,50 @@
-# copy_ph_to_input_VERBOSE.py
+# build_ph_database_only.py
 
 from pathlib import Path
 import re
-import shutil
+import csv
+import sqlite3
 from openpyxl import load_workbook
 
 
-# ------------------------------------------------------------
+# ============================================================
 # CONFIGURATION
-# ------------------------------------------------------------
-
-INPUT_XLSM = r"G:\Mi unidad\LABSAF ILLPA\input.xlsm"
+# ============================================================
 
 PH_FOLDER = r"G:\Mi unidad\LABSAF ILLPA\1. Documentos Internos\7.5 Registros Tecnicos\2026\SUELOS\1.pH"
 
-OUTPUT_XLSM = r"G:\Mi unidad\LABSAF ILLPA\input_WITH_PH.xlsm"
+DATABASE_FILE = r"G:\Mi unidad\LABSAF ILLPA\ph_database.sqlite"
 
-# Input file tab
-INPUT_SHEET_NAME = "P_DIS"
+CSV_FILE = r"G:\Mi unidad\LABSAF ILLPA\ph_database.csv"
 
-# pH file tab
 PH_SHEET_NAME = "F-103"
 
-# Input file structure
-INPUT_FIRST_ROW = 36
-BLOCK_SIZE = 21
-GAP_ROWS = 2
-
-INPUT_MARKER_COL = "B"
-INPUT_CODE_COL = "C"
-INPUT_OUTPUT_COL = "E"
-
-# pH file structure
 PH_FIRST_ROW = 27
-PH_MARKER_COL = "B"
-PH_CODE_COL = "C"
-PH_VALUE_COL = "H"
+
+PH_MARKER_COL = "B"   # D, D2, 1, 2, etc.
+PH_CODE_COL = "C"     # SU code
+PH_VALUE_COL = "H"    # pH value
 
 VERBOSE = True
 
 
-# ------------------------------------------------------------
-# VERBOSE PRINT
-# ------------------------------------------------------------
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
 
 def vprint(message):
     if VERBOSE:
         print(message)
 
 
-# ------------------------------------------------------------
-# HELPER FUNCTIONS
-# ------------------------------------------------------------
-
 def normalize_text(value):
     """
-    Convert Excel value to clean text.
+    Clean Excel text.
 
-    Excel sometimes stores text like:
-        'SU1149-ILL-26
-
-    The apostrophe is only a text marker.
-    This function removes it so that:
-
-        SU1149-ILL-26
-        'SU1149-ILL-26
-
-    are treated as the same code.
+    It removes:
+    - spaces
+    - non-breaking spaces
+    - leading Excel apostrophe, for example 'SU1149-ILL-26
     """
     if value is None:
         return ""
@@ -75,21 +53,31 @@ def normalize_text(value):
     text = text.replace("\xa0", " ")
     text = re.sub(r"\s+", " ", text)
 
-    # Remove leading apostrophe used by Excel to force text format
+    # Remove leading Excel apostrophe
     text = text.lstrip("'").strip()
 
     return text
 
 
+def normalize_code(value):
+    """
+    Normalize SU code.
+    """
+    return normalize_text(value).upper()
+
+
 def normalize_marker(value):
     """
-    Normalize column B values.
+    Normalize the marker from column B.
 
-    Examples:
-        D   -> D
-        1   -> 1
-        1.0 -> 1
-        "1" -> 1
+    Important:
+    This keeps values like:
+        D
+        D2
+        1
+        2
+
+    It only converts numeric 1.0 to 1.
     """
     text = normalize_text(value).upper()
 
@@ -108,15 +96,14 @@ def normalize_marker(value):
 
 def extract_su_number(value):
     """
-    Extract numeric SU number.
+    Extract only the numeric SU number.
 
     Examples:
         SU1149-ILL-26   -> 1149
         'SU1149-ILL-26  -> 1149
         SU0079          -> 79
-        SU10747         -> 10747
     """
-    text = normalize_text(value).upper()
+    text = normalize_code(value)
 
     match = re.search(r"SU\s*0*(\d+)", text)
 
@@ -126,510 +113,304 @@ def extract_su_number(value):
     return int(match.group(1))
 
 
-def extract_su_ranges_from_filename(filename):
+def get_sheet(workbook, sheet_name):
     """
-    Extract SU ranges from filenames.
-
-    Supported examples:
-        SU0668-0767.xlsx
-        SU0597-0602- SU0608-0667.xlsx
-        SU1144-1175.xlsx
-        SU10268-10269.xlsx
-
-    Returns:
-        [(668, 767)]
-        [(597, 602), (608, 667)]
+    Get sheet by name.
     """
-    text = normalize_text(filename).upper()
-
-    ranges = []
-
-    pattern = r"SU\s*0*(\d+)\s*-\s*0*(\d+)"
-
-    for start, end in re.findall(pattern, text):
-        start = int(start)
-        end = int(end)
-
-        if start <= end:
-            ranges.append((start, end))
-        else:
-            ranges.append((end, start))
-
-    return ranges
-
-
-def file_contains_su_number(path, su_number):
-    """
-    Check if the filename contains a range that includes the SU number.
-    """
-    ranges = extract_su_ranges_from_filename(path.name)
-
-    vprint(f"      Checking file range: {path.name}")
-
-    if not ranges:
-        vprint("        No SU range found in filename.")
-        return False
-
-    for start, end in ranges:
-        vprint(f"        Range found: SU{start} to SU{end}")
-
-        if start <= su_number <= end:
-            vprint(f"        YES: SU{su_number} is inside SU{start}-{end}")
-            return True
-        else:
-            vprint(f"        NO: SU{su_number} is not inside SU{start}-{end}")
-
-    return False
-
-
-def find_candidate_ph_files(ph_folder, su_number):
-    """
-    Find all pH Excel files whose filename range contains the SU number.
-    """
-    ph_folder = Path(ph_folder)
-
-    vprint("")
-    vprint(f"    Looking for pH Excel file containing SU{su_number}")
-    vprint(f"    Folder: {ph_folder}")
-
-    candidates = []
-
-    excel_files = list(ph_folder.glob("*.xlsx")) + list(ph_folder.glob("*.xlsm"))
-
-    vprint(f"    Number of Excel files found in pH folder: {len(excel_files)}")
-
-    for path in sorted(excel_files):
-        if file_contains_su_number(path, su_number):
-            candidates.append(path)
-
-    vprint(f"    Candidate files found: {len(candidates)}")
-
-    for candidate in candidates:
-        vprint(f"      Candidate: {candidate.name}")
-
-    return sorted(candidates)
-
-
-def get_sheet(workbook, sheet_name=None):
-    """
-    Return selected sheet or active sheet.
-    """
-    if sheet_name is None:
-        ws = workbook.active
-        vprint(f"    Using active sheet: {ws.title}")
-        return ws
-
     if sheet_name not in workbook.sheetnames:
         raise ValueError(
-            f"Sheet '{sheet_name}' not found. Available sheets: {workbook.sheetnames}"
+            f"Sheet '{sheet_name}' not found. "
+            f"Available sheets: {workbook.sheetnames}"
         )
 
-    ws = workbook[sheet_name]
-    vprint(f"    Using sheet: {ws.title}")
-    return ws
+    return workbook[sheet_name]
 
 
-def codes_match(input_code, ph_code):
-    """
-    Match by exact normalized text or by SU number.
+# ============================================================
+# SQLITE FUNCTIONS
+# ============================================================
 
-    This allows these to match:
+def create_database(db_path):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
 
-        SU1149-ILL-26
-        'SU1149-ILL-26
-        SU1149
-    """
-    input_text = normalize_text(input_code).upper()
-    ph_text = normalize_text(ph_code).upper()
+    cur.execute("DROP TABLE IF EXISTS ph_data")
 
-    if input_text == "" or ph_text == "":
-        return False
+    cur.execute(
+        """
+        CREATE TABLE ph_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    if input_text == ph_text:
-        return True
+            su_code TEXT,
+            ph_value TEXT,
+            marker TEXT,
 
-    input_su = extract_su_number(input_text)
-    ph_su = extract_su_number(ph_text)
+            su_number INTEGER,
 
-    if input_su is not None and ph_su is not None:
-        return input_su == ph_su
-
-    return False
-
-
-def find_ph_value_in_file(ph_file, input_code, input_marker):
-    """
-    Open one pH Excel file and search from PH_FIRST_ROW down.
-
-    Matching rule:
-        1. Column C must match the SU code or SU number.
-        2. Column B must match the input marker D, 1, 2, etc.
-
-    If exact marker match is not found, it uses code-only fallback
-    only if the code appears once.
-    """
-    vprint("")
-    vprint("    Opening pH Excel file:")
-    vprint(f"      {ph_file}")
-
-    wb = load_workbook(ph_file, data_only=True, read_only=True)
-    ws = get_sheet(wb, PH_SHEET_NAME)
-
-    input_marker_norm = normalize_marker(input_marker)
-    input_code_norm = normalize_text(input_code)
-
-    vprint(f"    Searching inside pH file from row {PH_FIRST_ROW} to {ws.max_row}")
-    vprint("    Need to match:")
-    vprint(f"      Input marker B = {input_marker_norm}")
-    vprint(f"      Input code   C = {input_code_norm}")
-
-    exact_matches = []
-    code_only_matches = []
-
-    for row in range(PH_FIRST_ROW, ws.max_row + 1):
-        ph_marker = ws[f"{PH_MARKER_COL}{row}"].value
-        ph_code = ws[f"{PH_CODE_COL}{row}"].value
-        ph_value = ws[f"{PH_VALUE_COL}{row}"].value
-
-        ph_marker_norm = normalize_marker(ph_marker)
-        ph_code_norm = normalize_text(ph_code)
-
-        vprint(
-            f"      pH row {row}: "
-            f"B={ph_marker_norm!r}, "
-            f"C={ph_code_norm!r}, "
-            f"H={ph_value!r}"
+            source_file TEXT,
+            source_sheet TEXT,
+            source_row INTEGER
         )
+        """
+    )
 
-        if not codes_match(input_code, ph_code):
-            vprint("        Code does not match.")
-            continue
+    cur.execute(
+        """
+        CREATE INDEX idx_ph_su_code
+        ON ph_data (su_code)
+        """
+    )
 
-        vprint("        Code matches.")
+    cur.execute(
+        """
+        CREATE INDEX idx_ph_su_number_marker
+        ON ph_data (su_number, marker)
+        """
+    )
 
-        code_only_matches.append(
-            {
-                "row": row,
-                "marker": ph_marker_norm,
-                "code": ph_code_norm,
-                "value": ph_value,
-            }
+    cur.execute(
+        """
+        CREATE INDEX idx_ph_marker
+        ON ph_data (marker)
+        """
+    )
+
+    conn.commit()
+
+    return conn
+
+
+def insert_record(
+    conn,
+    su_code,
+    ph_value,
+    marker,
+    su_number,
+    source_file,
+    source_sheet,
+    source_row,
+):
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO ph_data (
+            su_code,
+            ph_value,
+            marker,
+            su_number,
+            source_file,
+            source_sheet,
+            source_row
         )
-
-        if ph_marker_norm == input_marker_norm:
-            vprint("        Marker also matches.")
-
-            exact_matches.append(
-                {
-                    "row": row,
-                    "marker": ph_marker_norm,
-                    "code": ph_code_norm,
-                    "value": ph_value,
-                }
-            )
-        else:
-            vprint(
-                "        Marker does not match. "
-                f"Input marker={input_marker_norm}, pH marker={ph_marker_norm}"
-            )
-
-    wb.close()
-
-    if len(exact_matches) == 1:
-        match = exact_matches[0]
-
-        vprint("")
-        vprint("    MATCH FOUND:")
-        vprint(f"      File: {ph_file.name}")
-        vprint(f"      pH row: {match['row']}")
-        vprint(f"      Marker B: {match['marker']}")
-        vprint(f"      Code C: {match['code']}")
-        vprint(f"      pH value H: {match['value']}")
-
-        return match["value"], match["row"], "exact marker + code match"
-
-    if len(exact_matches) > 1:
-        raise ValueError(
-            f"Multiple exact matches in {ph_file.name} "
-            f"for code={input_code}, marker={input_marker}. "
-            f"Rows: {[m['row'] for m in exact_matches]}"
-        )
-
-    if len(code_only_matches) == 1:
-        match = code_only_matches[0]
-
-        vprint("")
-        vprint("    WARNING:")
-        vprint("    Code matched, but marker did not match.")
-        vprint("    Using code-only fallback because code appears only once.")
-        vprint(f"      File: {ph_file.name}")
-        vprint(f"      pH row: {match['row']}")
-        vprint(f"      Marker B: {match['marker']}")
-        vprint(f"      Code C: {match['code']}")
-        vprint(f"      pH value H: {match['value']}")
-
-        return match["value"], match["row"], "code-only fallback"
-
-    if len(code_only_matches) > 1:
-        raise ValueError(
-            f"Code found multiple times in {ph_file.name}, "
-            f"but marker did not match. "
-            f"Input code={input_code}, input marker={input_marker}. "
-            f"Candidate rows: {[(m['row'], m['marker']) for m in code_only_matches]}"
-        )
-
-    vprint("")
-    vprint(f"    No match found in file: {ph_file.name}")
-
-    return None, None, "not found"
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            su_code,
+            str(ph_value),
+            marker,
+            su_number,
+            source_file,
+            source_sheet,
+            source_row,
+        ),
+    )
 
 
-def iter_input_rows(ws):
-    """
-    Generate input rows in this pattern:
+# ============================================================
+# MAIN DATABASE BUILDER
+# ============================================================
 
-        36 to 56
-        59 to 79
-        82 to 102
-        105 to 125
-        ...
-
-    Each block has 21 rows.
-    Between blocks, 2 rows are skipped.
-    """
-    row = INPUT_FIRST_ROW
-
-    while row <= ws.max_row:
-        block_start = row
-        block_end = row + BLOCK_SIZE - 1
-
-        vprint("")
-        vprint("------------------------------------------------------------")
-        vprint(f"Input block: rows {block_start} to {block_end}")
-        vprint("------------------------------------------------------------")
-
-        for r in range(block_start, min(block_end, ws.max_row) + 1):
-            yield r
-
-        row = block_end + GAP_ROWS + 1
-
-
-# ------------------------------------------------------------
-# MAIN FUNCTION
-# ------------------------------------------------------------
-
-def main():
-    input_path = Path(INPUT_XLSM)
-    output_path = Path(OUTPUT_XLSM)
+def build_ph_database():
     ph_folder = Path(PH_FOLDER)
+    db_path = Path(DATABASE_FILE)
+    csv_path = Path(CSV_FILE)
 
     print("")
     print("============================================================")
-    print("STARTING pH COPY PROCESS")
+    print("BUILDING pH DATABASE FROM ALL EXCEL FILES")
     print("============================================================")
-    print("Input XLSM:")
-    print(f"  {input_path}")
-    print("Input tab:")
-    print(f"  {INPUT_SHEET_NAME}")
-    print("pH folder:")
+    print(f"pH folder:")
     print(f"  {ph_folder}")
-    print("pH file tab:")
-    print(f"  {PH_SHEET_NAME}")
-    print("Output XLSM:")
-    print(f"  {output_path}")
+    print(f"SQLite database:")
+    print(f"  {db_path}")
+    print(f"CSV output:")
+    print(f"  {csv_path}")
     print("============================================================")
-
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input file not found: {input_path}")
 
     if not ph_folder.exists():
-        raise FileNotFoundError(f"pH folder not found: {ph_folder}")
+        raise FileNotFoundError(f"Folder not found: {ph_folder}")
+
+    excel_files = sorted(
+        list(ph_folder.glob("*.xlsx")) +
+        list(ph_folder.glob("*.xlsm"))
+    )
 
     print("")
-    print("Copying original XLSM to output file...")
-    shutil.copy2(input_path, output_path)
-    print("Copy created successfully.")
-    print(f"  {output_path}")
+    print(f"Excel files found: {len(excel_files)}")
 
-    print("")
-    print("Opening input workbook for reading values...")
-    wb_values = load_workbook(input_path, data_only=True, keep_vba=True)
-    ws_values = get_sheet(wb_values, INPUT_SHEET_NAME)
-    print(f"Input sheet used: {ws_values.title}")
-    print(f"Input max row: {ws_values.max_row}")
+    conn = create_database(db_path)
 
-    print("")
-    print("Opening copied workbook for writing pH values...")
-    wb_out = load_workbook(output_path, keep_vba=True)
-    ws_out = get_sheet(wb_out, INPUT_SHEET_NAME)
-    print(f"Output sheet used: {ws_out.title}")
+    csv_file = open(csv_path, "w", newline="", encoding="utf-8-sig")
+    writer = csv.writer(csv_file)
 
-    log = []
+    # You asked for the B values as the 3rd column.
+    writer.writerow(
+        [
+            "SU_CODE",        # column 1
+            "PH_VALUE",       # column 2
+            "MARKER_B",       # column 3: B values, D, D2, 1, 2, etc.
+            "SU_NUMBER",
+            "SOURCE_FILE",
+            "SOURCE_SHEET",
+            "SOURCE_ROW",
+        ]
+    )
 
-    for row in iter_input_rows(ws_values):
+    total_inserted = 0
+    total_skipped = 0
+
+    for file_index, excel_file in enumerate(excel_files, start=1):
         print("")
-        print("============================================================")
-        print(f"READING INPUT ROW {row}")
-        print("============================================================")
+        print("------------------------------------------------------------")
+        print(f"[{file_index}/{len(excel_files)}] Opening file:")
+        print(f"  {excel_file.name}")
+        print("------------------------------------------------------------")
 
-        input_marker = ws_values[f"{INPUT_MARKER_COL}{row}"].value
-        input_code = ws_values[f"{INPUT_CODE_COL}{row}"].value
+        try:
+            wb = load_workbook(excel_file, data_only=True, read_only=True)
 
-        marker_text = normalize_marker(input_marker)
-        code_text = normalize_text(input_code)
+            if PH_SHEET_NAME not in wb.sheetnames:
+                print(f"  SKIPPED: sheet '{PH_SHEET_NAME}' not found.")
+                print(f"  Available sheets: {wb.sheetnames}")
+                wb.close()
+                continue
 
-        print(
-            f"Input cell {INPUT_MARKER_COL}{row}: "
-            f"{input_marker!r} -> normalized: {marker_text!r}"
-        )
-        print(
-            f"Input cell {INPUT_CODE_COL}{row}: "
-            f"{input_code!r} -> normalized: {code_text!r}"
-        )
+            ws = wb[PH_SHEET_NAME]
 
-        if code_text == "":
-            print("This row has no code in column C. Skipping.")
-            continue
-
-        su_number = extract_su_number(code_text)
-
-        if su_number is None:
-            print("Could not extract SU number. Skipping this row.")
-
-            log.append(
-                {
-                    "input_row": row,
-                    "marker": marker_text,
-                    "code": code_text,
-                    "status": "SKIPPED - no SU number found",
-                    "file": "",
-                    "ph_row": "",
-                    "ph_value": "",
-                }
-            )
-            continue
-
-        print(f"Extracted SU number: SU{su_number}")
-
-        candidates = find_candidate_ph_files(ph_folder, su_number)
-
-        if not candidates:
+            print(f"  Sheet: {ws.title}")
+            print(f"  Max row: {ws.max_row}")
+            print(f"  Reading rows {PH_FIRST_ROW} to {ws.max_row}")
             print("")
-            print("ERROR:")
-            print(f"  No pH file was found containing SU{su_number}")
-
-            log.append(
-                {
-                    "input_row": row,
-                    "marker": marker_text,
-                    "code": code_text,
-                    "status": "ERROR - no pH file range contains this SU",
-                    "file": "",
-                    "ph_row": "",
-                    "ph_value": "",
-                }
-            )
-            continue
-
-        found_value = None
-        found_file = None
-        found_row = None
-        found_status = None
-
-        print("")
-        print("Now searching inside candidate pH file(s)...")
-
-        for ph_file in candidates:
-            ph_value, ph_row, status = find_ph_value_in_file(
-                ph_file=ph_file,
-                input_code=code_text,
-                input_marker=marker_text,
-            )
-
-            if ph_value is not None:
-                found_value = ph_value
-                found_file = ph_file
-                found_row = ph_row
-                found_status = status
-                break
-
-        if found_value is None:
+            print("  Extracting:")
+            print(f"    {PH_CODE_COL} = SU code")
+            print(f"    {PH_VALUE_COL} = pH")
+            print(f"    {PH_MARKER_COL} = marker / duplicate value")
             print("")
-            print("ERROR:")
-            print("  The correct pH Excel file was found by filename range,")
-            print("  but the code/marker was not found inside the file.")
-            print(f"  Input row: {row}")
-            print(f"  Marker B: {marker_text}")
-            print(f"  Code C: {code_text}")
-            print("  Candidate files:")
 
-            for p in candidates:
-                print(f"    {p.name}")
+            file_inserted = 0
+            file_skipped = 0
 
-            log.append(
-                {
-                    "input_row": row,
-                    "marker": marker_text,
-                    "code": code_text,
-                    "status": "ERROR - pH value not found inside candidate file(s)",
-                    "file": "; ".join(p.name for p in candidates),
-                    "ph_row": "",
-                    "ph_value": "",
-                }
-            )
-            continue
+            for row in range(PH_FIRST_ROW, ws.max_row + 1):
+                raw_marker = ws[f"{PH_MARKER_COL}{row}"].value
+                raw_code = ws[f"{PH_CODE_COL}{row}"].value
+                raw_ph = ws[f"{PH_VALUE_COL}{row}"].value
 
-        print("")
-        print("WRITING VALUE TO OUTPUT XLSM")
-        print(f"  pH value from file: {found_file.name}")
-        print(f"  pH source row: {found_row}")
-        print(f"  Source pH cell: {PH_VALUE_COL}{found_row}")
-        print(f"  Destination cell: {INPUT_OUTPUT_COL}{row}")
-        print(f"  Value written: {found_value}")
+                marker = normalize_marker(raw_marker)
+                su_code = normalize_code(raw_code)
+                ph_value = normalize_text(raw_ph)
+                su_number = extract_su_number(su_code)
 
-        ws_out[f"{INPUT_OUTPUT_COL}{row}"] = found_value
+                print(
+                    f"  Row {row}: "
+                    f"B={raw_marker!r} -> {marker!r}, "
+                    f"C={raw_code!r} -> {su_code!r}, "
+                    f"H={raw_ph!r} -> {ph_value!r}"
+                )
 
-        log.append(
-            {
-                "input_row": row,
-                "marker": marker_text,
-                "code": code_text,
-                "status": found_status,
-                "file": found_file.name,
-                "ph_row": found_row,
-                "ph_value": found_value,
-            }
-        )
+                # Skip fully empty rows
+                if marker == "" and su_code == "" and ph_value == "":
+                    print("    skipped: empty row")
+                    file_skipped += 1
+                    continue
 
-    print("")
-    print("Saving output workbook...")
-    wb_out.save(output_path)
+                # Skip rows without SU code
+                if su_code == "":
+                    print("    skipped: empty SU code")
+                    file_skipped += 1
+                    continue
 
-    wb_values.close()
-    wb_out.close()
+                # Skip rows that do not contain SU number
+                if su_number is None:
+                    print("    skipped: no SU number found")
+                    file_skipped += 1
+                    continue
+
+                # Skip rows without pH
+                if ph_value == "":
+                    print("    skipped: empty pH value")
+                    file_skipped += 1
+                    continue
+
+                insert_record(
+                    conn=conn,
+                    su_code=su_code,
+                    ph_value=ph_value,
+                    marker=marker,
+                    su_number=su_number,
+                    source_file=excel_file.name,
+                    source_sheet=ws.title,
+                    source_row=row,
+                )
+
+                writer.writerow(
+                    [
+                        su_code,
+                        ph_value,
+                        marker,
+                        su_number,
+                        excel_file.name,
+                        ws.title,
+                        row,
+                    ]
+                )
+
+                print(
+                    f"    INSERTED: "
+                    f"SU_CODE={su_code}, "
+                    f"PH_VALUE={ph_value}, "
+                    f"MARKER_B={marker}"
+                )
+
+                file_inserted += 1
+
+            conn.commit()
+            wb.close()
+
+            print("")
+            print(f"  File inserted rows: {file_inserted}")
+            print(f"  File skipped rows:  {file_skipped}")
+
+            total_inserted += file_inserted
+            total_skipped += file_skipped
+
+        except Exception as e:
+            print("")
+            print("  ERROR reading this file:")
+            print(f"    {excel_file}")
+            print("  Exception:")
+            print(f"    {e}")
+
+    csv_file.close()
+
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM ph_data")
+    db_count = cur.fetchone()[0]
+
+    conn.close()
 
     print("")
     print("============================================================")
-    print("FINISHED")
+    print("DATABASE BUILD FINISHED")
     print("============================================================")
-    print("Output file created:")
-    print(f"  {output_path}")
-
+    print(f"Total inserted rows: {total_inserted}")
+    print(f"Total skipped rows:  {total_skipped}")
+    print(f"Rows in SQLite DB:   {db_count}")
     print("")
-    print("FINAL SUMMARY")
-    print("============================================================")
-
-    for item in log:
-        print(
-            f"Input row {item['input_row']:>4} | "
-            f"B={item['marker']:<5} | "
-            f"C={item['code']:<25} | "
-            f"pH={str(item['ph_value']):<12} | "
-            f"pH row={str(item['ph_row']):<5} | "
-            f"{item['status']} | "
-            f"{item['file']}"
-        )
+    print("Created files:")
+    print(f"  {db_path}")
+    print(f"  {csv_path}")
 
 
 if __name__ == "__main__":
-    main()
+    build_ph_database()
