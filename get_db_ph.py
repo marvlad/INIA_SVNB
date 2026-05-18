@@ -121,8 +121,6 @@ def normalize_ph(value):
 
     Converts comma decimal to dot:
         7,5 -> 7.5
-
-    Keeps as text in DB/CSV, but also clean.
     """
     text = normalize_text(value)
 
@@ -307,6 +305,9 @@ def build_ph_database():
     print(f"  {PH_VALUE_COL} = ph")
     print("Rows:")
     print("  27:47, 50:70, 73:93, ...")
+    print("")
+    print("Stop rule:")
+    print("  If column C has no SU/code, stop reading that file and move to next file.")
     print("============================================================")
 
     if not ph_folder.exists():
@@ -339,13 +340,14 @@ def build_ph_database():
 
     total_inserted = 0
     total_skipped = 0
+    total_files_stopped_by_empty_code = 0
 
     for file_index, excel_file in enumerate(excel_files, start=1):
         print("")
         print("============================================================")
         print(f"[{file_index}/{len(excel_files)}] ACCESSING EXCEL FILE")
         print("============================================================")
-        print(f"File:")
+        print("File:")
         print(f"  {excel_file}")
 
         try:
@@ -360,7 +362,7 @@ def build_ph_database():
 
             if PH_SHEET_NAME not in wb.sheetnames:
                 print("")
-                print(f"SKIPPED: sheet '{PH_SHEET_NAME}' not found.")
+                print(f"SKIPPED FILE: sheet '{PH_SHEET_NAME}' not found.")
                 print(f"Available sheets: {wb.sheetnames}")
                 wb.close()
                 continue
@@ -373,6 +375,7 @@ def build_ph_database():
 
             file_inserted = 0
             file_skipped = 0
+            stopped_by_empty_code = False
 
             for row in iter_ph_rows(ws):
                 duplicate_cell = f"{PH_DUPLICATE_COL}{row}"
@@ -395,27 +398,31 @@ def build_ph_database():
                 print(f"  {ph_cell} ph raw          = {raw_ph!r} -> {ph!r}")
                 print(f"  Extracted SU number       = {su_number}")
 
-                # Skip completely empty row
-                if duplicate == "" and code == "" and ph == "":
-                    print("  SKIPPED: empty row")
-                    file_skipped += 1
-                    continue
-
-                # Skip rows without code
+                # ------------------------------------------------------------
+                # IMPORTANT NEW RULE
+                # ------------------------------------------------------------
+                # If there is no SU/code in column C, this means the file ended.
+                # Stop this file and move on to the next Excel file.
+                # ------------------------------------------------------------
                 if code == "":
-                    print("  SKIPPED: empty code")
-                    file_skipped += 1
-                    continue
+                    print("")
+                    print("  STOP FILE:")
+                    print(f"    No code/SU found in {code_cell}.")
+                    print("    This means the data ended in this file.")
+                    print("    Moving to the next pH Excel file.")
+                    stopped_by_empty_code = True
+                    total_files_stopped_by_empty_code += 1
+                    break
 
-                # Skip rows without SU number
+                # If column C has text, but it does not contain SU, skip only this row.
                 if su_number is None:
-                    print("  SKIPPED: no SU number found in code")
+                    print("  SKIPPED ROW: code exists, but no SU number found.")
                     file_skipped += 1
                     continue
 
-                # Skip rows without pH
+                # If pH is empty, skip only this row.
                 if ph == "":
-                    print("  SKIPPED: empty pH")
+                    print("  SKIPPED ROW: empty pH.")
                     file_skipped += 1
                     continue
 
@@ -462,6 +469,12 @@ def build_ph_database():
             print(f"Finished file: {excel_file.name}")
             print(f"Inserted rows: {file_inserted}")
             print(f"Skipped rows:  {file_skipped}")
+
+            if stopped_by_empty_code:
+                print("Stop reason: first empty code in column C")
+            else:
+                print("Stop reason: reached max row")
+
             print("------------------------------------------------------------")
 
         except Exception as e:
@@ -486,6 +499,7 @@ def build_ph_database():
     print(f"Total inserted rows: {total_inserted}")
     print(f"Total skipped rows:  {total_skipped}")
     print(f"Rows in SQLite DB:   {db_count}")
+    print(f"Files stopped by first empty code in column C: {total_files_stopped_by_empty_code}")
     print("")
     print("Created:")
     print(f"  {db_path}")
