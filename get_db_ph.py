@@ -17,20 +17,16 @@ DATABASE_FILE = r"G:\Mi unidad\LABSAF ILLPA\ph_database_Ver03.sqlite"
 
 CSV_FILE = r"G:\Mi unidad\LABSAF ILLPA\ph_database_Ver03.csv"
 
-# Only files containing this text in the filename will be read
 FILE_NAME_FILTER = "Ver.03"
 
-# pH Excel tab
 PH_SHEET_NAME = "F-103"
 
-# pH file structure
 PH_FIRST_ROW = 27
 
-# Read:
+# Blocks:
 #   27 to 47
 #   50 to 70
 #   73 to 93
-#   96 to 116
 #   ...
 BLOCK_SIZE = 21
 GAP_ROWS = 2
@@ -43,30 +39,10 @@ VERBOSE = True
 
 
 # ============================================================
-# PRINT HELPER
-# ============================================================
-
-def vprint(message):
-    if VERBOSE:
-        print(message)
-
-
-# ============================================================
-# NORMALIZATION
+# HELPERS
 # ============================================================
 
 def normalize_text(value):
-    """
-    Clean Excel text.
-
-    Handles:
-        SU1149-ILL-26
-        'SU1149-ILL-26
-        spaces
-        non-breaking spaces
-
-    The apostrophe in front is ignored.
-    """
     if value is None:
         return ""
 
@@ -74,8 +50,8 @@ def normalize_text(value):
     text = text.replace("\xa0", " ")
     text = re.sub(r"\s+", " ", text)
 
-    # Ignore leading Excel apostrophe:
-    #   'SU1149-ILL-26 -> SU1149-ILL-26
+    # Ignore Excel apostrophe:
+    # 'SU1149-ILL-26 -> SU1149-ILL-26
     text = text.lstrip("'").strip()
 
     return text
@@ -86,20 +62,6 @@ def normalize_code(value):
 
 
 def normalize_duplicate(value):
-    """
-    Normalize duplicate value from column B.
-
-    Keeps:
-        D
-        D2
-        1
-        2
-        20
-
-    Converts:
-        1.0 -> 1
-        2.0 -> 2
-    """
     text = normalize_text(value).upper()
 
     if text == "":
@@ -116,31 +78,16 @@ def normalize_duplicate(value):
 
 
 def normalize_ph(value):
-    """
-    Normalize pH value from column H.
-
-    Converts comma decimal to dot:
-        7,5 -> 7.5
-    """
     text = normalize_text(value)
 
     if text == "":
         return ""
 
     text = text.replace(",", ".")
-
     return text
 
 
 def extract_su_number(value):
-    """
-    Extract numeric SU number.
-
-    Examples:
-        SU1149-ILL-26   -> 1149
-        'SU1149-ILL-26  -> 1149
-        SU0079          -> 79
-    """
     text = normalize_code(value)
 
     match = re.search(r"SU\s*0*(\d+)", text)
@@ -151,38 +98,29 @@ def extract_su_number(value):
     return int(match.group(1))
 
 
-# ============================================================
-# ROW ITERATOR
-# ============================================================
+def get_ver03_excel_files(ph_folder):
+    all_excel_files = sorted(
+        list(ph_folder.glob("*.xlsx")) +
+        list(ph_folder.glob("*.xlsm"))
+    )
 
-def iter_ph_rows(ws):
-    """
-    Generate rows in this pattern:
+    filtered_files = [
+        path for path in all_excel_files
+        if FILE_NAME_FILTER.upper() in path.name.upper()
+    ]
 
-        27 to 47
-        50 to 70
-        73 to 93
-        96 to 116
-        ...
+    print("")
+    print("File filter:")
+    print(f"  Only reading files containing: {FILE_NAME_FILTER}")
+    print(f"  Total Excel files found: {len(all_excel_files)}")
+    print(f"  Ver.03 files selected:   {len(filtered_files)}")
 
-    Each block has 21 rows.
-    Between blocks, 2 rows are skipped.
-    """
-    row = PH_FIRST_ROW
+    print("")
+    print("Selected files:")
+    for path in filtered_files:
+        print(f"  - {path.name}")
 
-    while row <= ws.max_row:
-        block_start = row
-        block_end = row + BLOCK_SIZE - 1
-
-        vprint("")
-        vprint("------------------------------------------------------------")
-        vprint(f"Reading pH block: rows {block_start} to {block_end}")
-        vprint("------------------------------------------------------------")
-
-        for r in range(block_start, min(block_end, ws.max_row) + 1):
-            yield r
-
-        row = block_end + GAP_ROWS + 1
+    return filtered_files
 
 
 # ============================================================
@@ -190,9 +128,7 @@ def iter_ph_rows(ws):
 # ============================================================
 
 def create_database(db_file):
-    db_path = Path(db_file)
-
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_file)
     cur = conn.cursor()
 
     cur.execute("DROP TABLE IF EXISTS ph_data")
@@ -215,29 +151,11 @@ def create_database(db_file):
         """
     )
 
-    cur.execute(
-        """
-        CREATE INDEX idx_ph_code
-        ON ph_data (code)
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE INDEX idx_ph_su_number
-        ON ph_data (su_number)
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE INDEX idx_ph_duplicate
-        ON ph_data (duplicate)
-        """
-    )
+    cur.execute("CREATE INDEX idx_ph_code ON ph_data (code)")
+    cur.execute("CREATE INDEX idx_ph_su_number ON ph_data (su_number)")
+    cur.execute("CREATE INDEX idx_ph_duplicate ON ph_data (duplicate)")
 
     conn.commit()
-
     return conn
 
 
@@ -279,40 +197,6 @@ def insert_record(
 
 
 # ============================================================
-# FILE FILTER
-# ============================================================
-
-def get_ver03_excel_files(ph_folder):
-    """
-    Return only .xlsx/.xlsm files whose name contains Ver.03.
-    Case-insensitive.
-    """
-    all_excel_files = sorted(
-        list(ph_folder.glob("*.xlsx")) +
-        list(ph_folder.glob("*.xlsm"))
-    )
-
-    filtered_files = [
-        path for path in all_excel_files
-        if FILE_NAME_FILTER.upper() in path.name.upper()
-    ]
-
-    print("")
-    print("File filter:")
-    print(f"  Only reading files containing: {FILE_NAME_FILTER}")
-    print(f"  Total Excel files found: {len(all_excel_files)}")
-    print(f"  Ver.03 files selected:   {len(filtered_files)}")
-
-    if VERBOSE:
-        print("")
-        print("Selected files:")
-        for path in filtered_files:
-            print(f"  - {path.name}")
-
-    return filtered_files
-
-
-# ============================================================
 # MAIN BUILDER
 # ============================================================
 
@@ -333,17 +217,11 @@ def build_ph_database():
     print(f"  {csv_path}")
     print("pH sheet:")
     print(f"  {PH_SHEET_NAME}")
-    print("Filename filter:")
-    print(f"  {FILE_NAME_FILTER}")
-    print("Columns:")
-    print(f"  {PH_DUPLICATE_COL} = duplicate")
-    print(f"  {PH_CODE_COL} = code")
-    print(f"  {PH_VALUE_COL} = ph")
     print("Rows:")
     print("  27:47, 50:70, 73:93, ...")
     print("")
     print("Stop rule:")
-    print("  If column C has no SU/code, stop reading that file and move to next file.")
+    print("  If both column C code and column H pH are empty, stop that file.")
     print("============================================================")
 
     if not ph_folder.exists():
@@ -370,7 +248,7 @@ def build_ph_database():
 
     total_inserted = 0
     total_skipped = 0
-    total_files_stopped_by_empty_code = 0
+    total_files_stopped = 0
 
     for file_index, excel_file in enumerate(excel_files, start=1):
         print("")
@@ -393,7 +271,6 @@ def build_ph_database():
             if PH_SHEET_NAME not in wb.sheetnames:
                 print("")
                 print(f"SKIPPED FILE: sheet '{PH_SHEET_NAME}' not found.")
-                print(f"Available sheets: {wb.sheetnames}")
                 wb.close()
                 continue
 
@@ -401,84 +278,140 @@ def build_ph_database():
 
             print("")
             print(f"Accessing sheet: {PH_SHEET_NAME}")
-            print(f"Max row: {ws.max_row}")
+            print(f"Excel reported max row: {ws.max_row}")
+            print("Important: max_row may be large because of formatting.")
+            print("The script will stop when C and H are both empty.")
 
             file_inserted = 0
             file_skipped = 0
-            stopped_by_empty_code = False
+            stopped_by_empty_code_and_ph = False
 
-            for row in iter_ph_rows(ws):
-                duplicate_cell = f"{PH_DUPLICATE_COL}{row}"
-                code_cell = f"{PH_CODE_COL}{row}"
-                ph_cell = f"{PH_VALUE_COL}{row}"
+            # ------------------------------------------------------------
+            # SAFE BLOCK LOOP
+            # ------------------------------------------------------------
+            # Instead of looping until ws.max_row forever, we generate blocks:
+            #   27:47
+            #   50:70
+            #   73:93
+            # and stop immediately when C and H are both empty.
+            # ------------------------------------------------------------
 
-                raw_duplicate = ws[duplicate_cell].value
-                raw_code = ws[code_cell].value
-                raw_ph = ws[ph_cell].value
+            block_start = PH_FIRST_ROW
 
-                duplicate = normalize_duplicate(raw_duplicate)
-                code = normalize_code(raw_code)
-                ph = normalize_ph(raw_ph)
-                su_number = extract_su_number(code)
+            while True:
+                block_end = block_start + BLOCK_SIZE - 1
 
                 print("")
-                print(f"Reading row {row}:")
-                print(f"  {duplicate_cell} duplicate raw = {raw_duplicate!r} -> {duplicate!r}")
-                print(f"  {code_cell} code raw      = {raw_code!r} -> {code!r}")
-                print(f"  {ph_cell} ph raw          = {raw_ph!r} -> {ph!r}")
-                print(f"  Extracted SU number       = {su_number}")
+                print("------------------------------------------------------------")
+                print(f"Reading pH block: rows {block_start} to {block_end}")
+                print("------------------------------------------------------------")
 
-                if code == "":
+                stop_this_file = False
+
+                for row in range(block_start, block_end + 1):
+                    duplicate_cell = f"{PH_DUPLICATE_COL}{row}"
+                    code_cell = f"{PH_CODE_COL}{row}"
+                    ph_cell = f"{PH_VALUE_COL}{row}"
+
+                    raw_duplicate = ws[duplicate_cell].value
+                    raw_code = ws[code_cell].value
+                    raw_ph = ws[ph_cell].value
+
+                    duplicate = normalize_duplicate(raw_duplicate)
+                    code = normalize_code(raw_code)
+                    ph = normalize_ph(raw_ph)
+                    su_number = extract_su_number(code)
+
                     print("")
-                    print("  STOP FILE:")
-                    print(f"    No code/SU found in {code_cell}.")
-                    print("    This means the data ended in this file.")
-                    print("    Moving to the next Ver.03 pH Excel file.")
-                    stopped_by_empty_code = True
-                    total_files_stopped_by_empty_code += 1
+                    print(f"Reading row {row}:")
+                    print(f"  {duplicate_cell} duplicate raw = {raw_duplicate!r} -> {duplicate!r}")
+                    print(f"  {code_cell} code raw      = {raw_code!r} -> {code!r}")
+                    print(f"  {ph_cell} ph raw          = {raw_ph!r} -> {ph!r}")
+                    print(f"  Extracted SU number       = {su_number}")
+
+                    # ----------------------------------------------------
+                    # IMPORTANT STOP RULE
+                    # ----------------------------------------------------
+                    # If there is no code in C and no pH in H,
+                    # the useful data ended in this file.
+                    # ----------------------------------------------------
+                    if code == "" and ph == "":
+                        print("")
+                        print("  STOP FILE:")
+                        print(f"    {code_cell} is empty.")
+                        print(f"    {ph_cell} is empty.")
+                        print("    Column C and H are both empty.")
+                        print("    Moving to the next Excel file.")
+                        stop_this_file = True
+                        stopped_by_empty_code_and_ph = True
+                        total_files_stopped += 1
+                        break
+
+                    # If C has no SU but H has something, skip the row.
+                    if code == "":
+                        print("  SKIPPED ROW: empty code in column C, but pH column is not empty.")
+                        file_skipped += 1
+                        continue
+
+                    if su_number is None:
+                        print("  SKIPPED ROW: code exists, but no SU number found.")
+                        file_skipped += 1
+                        continue
+
+                    if ph == "":
+                        print("  SKIPPED ROW: empty pH in column H.")
+                        file_skipped += 1
+                        continue
+
+                    insert_record(
+                        conn=conn,
+                        duplicate=duplicate,
+                        code=code,
+                        ph=ph,
+                        su_number=su_number,
+                        source_file=excel_file.name,
+                        source_sheet=PH_SHEET_NAME,
+                        source_row=row,
+                    )
+
+                    writer.writerow(
+                        [
+                            duplicate,
+                            code,
+                            ph,
+                            su_number,
+                            excel_file.name,
+                            PH_SHEET_NAME,
+                            row,
+                        ]
+                    )
+
+                    print("  INSERTED INTO DATABASE AND CSV:")
+                    print(f"    duplicate = {duplicate}")
+                    print(f"    code      = {code}")
+                    print(f"    ph        = {ph}")
+                    print(f"    file      = {excel_file.name}")
+                    print(f"    row       = {row}")
+
+                    file_inserted += 1
+
+                if stop_this_file:
                     break
 
-                if su_number is None:
-                    print("  SKIPPED ROW: code exists, but no SU number found.")
-                    file_skipped += 1
-                    continue
+                # Move to next block:
+                # 27:47 -> next 50
+                # 50:70 -> next 73
+                block_start = block_end + GAP_ROWS + 1
 
-                if ph == "":
-                    print("  SKIPPED ROW: empty pH.")
-                    file_skipped += 1
-                    continue
-
-                insert_record(
-                    conn=conn,
-                    duplicate=duplicate,
-                    code=code,
-                    ph=ph,
-                    su_number=su_number,
-                    source_file=excel_file.name,
-                    source_sheet=PH_SHEET_NAME,
-                    source_row=row,
-                )
-
-                writer.writerow(
-                    [
-                        duplicate,
-                        code,
-                        ph,
-                        su_number,
-                        excel_file.name,
-                        PH_SHEET_NAME,
-                        row,
-                    ]
-                )
-
-                print("  INSERTED INTO DATABASE AND CSV:")
-                print(f"    duplicate = {duplicate}")
-                print(f"    code      = {code}")
-                print(f"    ph        = {ph}")
-                print(f"    file      = {excel_file.name}")
-                print(f"    row       = {row}")
-
-                file_inserted += 1
+                # Extra safety guard:
+                # If block_start goes far beyond Excel's reported max row,
+                # stop even if formatting caused weird behavior.
+                if block_start > ws.max_row + BLOCK_SIZE + GAP_ROWS:
+                    print("")
+                    print("  SAFETY STOP:")
+                    print("    Reached beyond Excel's reported max row.")
+                    print("    Moving to next file.")
+                    break
 
             conn.commit()
             wb.close()
@@ -492,10 +425,10 @@ def build_ph_database():
             print(f"Inserted rows: {file_inserted}")
             print(f"Skipped rows:  {file_skipped}")
 
-            if stopped_by_empty_code:
-                print("Stop reason: first empty code in column C")
+            if stopped_by_empty_code_and_ph:
+                print("Stop reason: first row where C and H are both empty")
             else:
-                print("Stop reason: reached max row")
+                print("Stop reason: safety stop or reached file end")
 
             print("------------------------------------------------------------")
 
@@ -521,7 +454,7 @@ def build_ph_database():
     print(f"Total inserted rows: {total_inserted}")
     print(f"Total skipped rows:  {total_skipped}")
     print(f"Rows in SQLite DB:   {db_count}")
-    print(f"Files stopped by first empty code in column C: {total_files_stopped_by_empty_code}")
+    print(f"Files stopped by empty C and H: {total_files_stopped}")
     print("")
     print("Created:")
     print(f"  {db_path}")
