@@ -16,9 +16,13 @@ PH_FOLDER = r"G:\Mi unidad\LABSAF ILLPA\1. Documentos Internos\7.5 Registros Tec
 
 OUTPUT_XLSM = r"G:\Mi unidad\LABSAF ILLPA\input_WITH_PH.xlsm"
 
-INPUT_SHEET_NAME = None
-PH_SHEET_NAME = None
+# Input file tab
+INPUT_SHEET_NAME = "P_DIS"
 
+# pH file tab
+PH_SHEET_NAME = "F-103"
+
+# Input file structure
 INPUT_FIRST_ROW = 36
 BLOCK_SIZE = 21
 GAP_ROWS = 2
@@ -27,6 +31,7 @@ INPUT_MARKER_COL = "B"
 INPUT_CODE_COL = "C"
 INPUT_OUTPUT_COL = "E"
 
+# pH file structure
 PH_FIRST_ROW = 27
 PH_MARKER_COL = "B"
 PH_CODE_COL = "C"
@@ -49,16 +54,43 @@ def vprint(message):
 # ------------------------------------------------------------
 
 def normalize_text(value):
+    """
+    Convert Excel value to clean text.
+
+    Excel sometimes stores text like:
+        'SU1149-ILL-26
+
+    The apostrophe is only a text marker.
+    This function removes it so that:
+
+        SU1149-ILL-26
+        'SU1149-ILL-26
+
+    are treated as the same code.
+    """
     if value is None:
         return ""
 
     text = str(value).strip()
     text = text.replace("\xa0", " ")
     text = re.sub(r"\s+", " ", text)
+
+    # Remove leading apostrophe used by Excel to force text format
+    text = text.lstrip("'").strip()
+
     return text
 
 
 def normalize_marker(value):
+    """
+    Normalize column B values.
+
+    Examples:
+        D   -> D
+        1   -> 1
+        1.0 -> 1
+        "1" -> 1
+    """
     text = normalize_text(value).upper()
 
     if text == "":
@@ -75,6 +107,15 @@ def normalize_marker(value):
 
 
 def extract_su_number(value):
+    """
+    Extract numeric SU number.
+
+    Examples:
+        SU1149-ILL-26   -> 1149
+        'SU1149-ILL-26  -> 1149
+        SU0079          -> 79
+        SU10747         -> 10747
+    """
     text = normalize_text(value).upper()
 
     match = re.search(r"SU\s*0*(\d+)", text)
@@ -86,6 +127,19 @@ def extract_su_number(value):
 
 
 def extract_su_ranges_from_filename(filename):
+    """
+    Extract SU ranges from filenames.
+
+    Supported examples:
+        SU0668-0767.xlsx
+        SU0597-0602- SU0608-0667.xlsx
+        SU1144-1175.xlsx
+        SU10268-10269.xlsx
+
+    Returns:
+        [(668, 767)]
+        [(597, 602), (608, 667)]
+    """
     text = normalize_text(filename).upper()
 
     ranges = []
@@ -105,6 +159,9 @@ def extract_su_ranges_from_filename(filename):
 
 
 def file_contains_su_number(path, su_number):
+    """
+    Check if the filename contains a range that includes the SU number.
+    """
     ranges = extract_su_ranges_from_filename(path.name)
 
     vprint(f"      Checking file range: {path.name}")
@@ -126,6 +183,9 @@ def file_contains_su_number(path, su_number):
 
 
 def find_candidate_ph_files(ph_folder, su_number):
+    """
+    Find all pH Excel files whose filename range contains the SU number.
+    """
     ph_folder = Path(ph_folder)
 
     vprint("")
@@ -151,6 +211,9 @@ def find_candidate_ph_files(ph_folder, su_number):
 
 
 def get_sheet(workbook, sheet_name=None):
+    """
+    Return selected sheet or active sheet.
+    """
     if sheet_name is None:
         ws = workbook.active
         vprint(f"    Using active sheet: {ws.title}")
@@ -167,6 +230,15 @@ def get_sheet(workbook, sheet_name=None):
 
 
 def codes_match(input_code, ph_code):
+    """
+    Match by exact normalized text or by SU number.
+
+    This allows these to match:
+
+        SU1149-ILL-26
+        'SU1149-ILL-26
+        SU1149
+    """
     input_text = normalize_text(input_code).upper()
     ph_text = normalize_text(ph_code).upper()
 
@@ -186,8 +258,18 @@ def codes_match(input_code, ph_code):
 
 
 def find_ph_value_in_file(ph_file, input_code, input_marker):
+    """
+    Open one pH Excel file and search from PH_FIRST_ROW down.
+
+    Matching rule:
+        1. Column C must match the SU code or SU number.
+        2. Column B must match the input marker D, 1, 2, etc.
+
+    If exact marker match is not found, it uses code-only fallback
+    only if the code appears once.
+    """
     vprint("")
-    vprint(f"    Opening pH Excel file:")
+    vprint("    Opening pH Excel file:")
     vprint(f"      {ph_file}")
 
     wb = load_workbook(ph_file, data_only=True, read_only=True)
@@ -197,7 +279,7 @@ def find_ph_value_in_file(ph_file, input_code, input_marker):
     input_code_norm = normalize_text(input_code)
 
     vprint(f"    Searching inside pH file from row {PH_FIRST_ROW} to {ws.max_row}")
-    vprint(f"    Need to match:")
+    vprint("    Need to match:")
     vprint(f"      Input marker B = {input_marker_norm}")
     vprint(f"      Input code   C = {input_code_norm}")
 
@@ -229,24 +311,25 @@ def find_ph_value_in_file(ph_file, input_code, input_marker):
             {
                 "row": row,
                 "marker": ph_marker_norm,
-                "code": ph_code,
+                "code": ph_code_norm,
                 "value": ph_value,
             }
         )
 
         if ph_marker_norm == input_marker_norm:
             vprint("        Marker also matches.")
+
             exact_matches.append(
                 {
                     "row": row,
                     "marker": ph_marker_norm,
-                    "code": ph_code,
+                    "code": ph_code_norm,
                     "value": ph_value,
                 }
             )
         else:
             vprint(
-                f"        Marker does not match. "
+                "        Marker does not match. "
                 f"Input marker={input_marker_norm}, pH marker={ph_marker_norm}"
             )
 
@@ -267,15 +350,17 @@ def find_ph_value_in_file(ph_file, input_code, input_marker):
 
     if len(exact_matches) > 1:
         raise ValueError(
-            f"Multiple exact matches in {ph_file.name} for code={input_code}, "
-            f"marker={input_marker}. Rows: {[m['row'] for m in exact_matches]}"
+            f"Multiple exact matches in {ph_file.name} "
+            f"for code={input_code}, marker={input_marker}. "
+            f"Rows: {[m['row'] for m in exact_matches]}"
         )
 
     if len(code_only_matches) == 1:
         match = code_only_matches[0]
 
         vprint("")
-        vprint("    WARNING: code matched, but marker did not match.")
+        vprint("    WARNING:")
+        vprint("    Code matched, but marker did not match.")
         vprint("    Using code-only fallback because code appears only once.")
         vprint(f"      File: {ph_file.name}")
         vprint(f"      pH row: {match['row']}")
@@ -287,7 +372,8 @@ def find_ph_value_in_file(ph_file, input_code, input_marker):
 
     if len(code_only_matches) > 1:
         raise ValueError(
-            f"Code found multiple times in {ph_file.name}, but marker did not match. "
+            f"Code found multiple times in {ph_file.name}, "
+            f"but marker did not match. "
             f"Input code={input_code}, input marker={input_marker}. "
             f"Candidate rows: {[(m['row'], m['marker']) for m in code_only_matches]}"
         )
@@ -299,6 +385,18 @@ def find_ph_value_in_file(ph_file, input_code, input_marker):
 
 
 def iter_input_rows(ws):
+    """
+    Generate input rows in this pattern:
+
+        36 to 56
+        59 to 79
+        82 to 102
+        105 to 125
+        ...
+
+    Each block has 21 rows.
+    Between blocks, 2 rows are skipped.
+    """
     row = INPUT_FIRST_ROW
 
     while row <= ws.max_row:
@@ -329,11 +427,15 @@ def main():
     print("============================================================")
     print("STARTING pH COPY PROCESS")
     print("============================================================")
-    print(f"Input XLSM:")
+    print("Input XLSM:")
     print(f"  {input_path}")
-    print(f"pH folder:")
+    print("Input tab:")
+    print(f"  {INPUT_SHEET_NAME}")
+    print("pH folder:")
     print(f"  {ph_folder}")
-    print(f"Output XLSM:")
+    print("pH file tab:")
+    print(f"  {PH_SHEET_NAME}")
+    print("Output XLSM:")
     print(f"  {output_path}")
     print("============================================================")
 
@@ -376,8 +478,14 @@ def main():
         marker_text = normalize_marker(input_marker)
         code_text = normalize_text(input_code)
 
-        print(f"Input cell {INPUT_MARKER_COL}{row}: {input_marker!r} -> normalized: {marker_text!r}")
-        print(f"Input cell {INPUT_CODE_COL}{row}: {input_code!r} -> normalized: {code_text!r}")
+        print(
+            f"Input cell {INPUT_MARKER_COL}{row}: "
+            f"{input_marker!r} -> normalized: {marker_text!r}"
+        )
+        print(
+            f"Input cell {INPUT_CODE_COL}{row}: "
+            f"{input_code!r} -> normalized: {code_text!r}"
+        )
 
         if code_text == "":
             print("This row has no code in column C. Skipping.")
@@ -454,6 +562,7 @@ def main():
             print(f"  Marker B: {marker_text}")
             print(f"  Code C: {code_text}")
             print("  Candidate files:")
+
             for p in candidates:
                 print(f"    {p.name}")
 
@@ -472,7 +581,7 @@ def main():
 
         print("")
         print("WRITING VALUE TO OUTPUT XLSM")
-        print(f"  pH value from: {found_file.name}")
+        print(f"  pH value from file: {found_file.name}")
         print(f"  pH source row: {found_row}")
         print(f"  Source pH cell: {PH_VALUE_COL}{found_row}")
         print(f"  Destination cell: {INPUT_OUTPUT_COL}{row}")
@@ -503,7 +612,7 @@ def main():
     print("============================================================")
     print("FINISHED")
     print("============================================================")
-    print(f"Output file created:")
+    print("Output file created:")
     print(f"  {output_path}")
 
     print("")
