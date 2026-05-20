@@ -38,47 +38,28 @@ TEMPLATES = {
     "olsen": "F-82 Reporte de Resultados Colorimetricos Ver.05 Olsen.xlsm",
 }
 
-# File containing the list of CSV files
 INPUT_DAT = "input.dat"
-
-# Folder where the CSV files are located
 CSV_DIR = "input"
-
-# Base output folder.
-# The script will create:
-#   output/bray/
-#   output/olsen/
 OUTPUT_DIR = "output"
 
 TARGET_SHEET = "P_DIS"
 
 DATE_CELL = "T12"
 
-# Excel columns in P_DIS for standards:
-# F = Concentración mg/L
-# H = Absorbancia / A882
+# Excel columns in P_DIS for standards
 CONCENTRATION_COLUMN = "F"
 A882_COLUMN = "H"
 
 START_ROW = 15
 
 # Sample output location in P_DIS
-# C = sample name
-# K = A882
 SAMPLE_NAME_COLUMN = "C"
 SAMPLE_A882_COLUMN = "K"
 
-# General block-writing pattern
-# Example:
-#   start at 37
-#   write 20 rows: 37-56
-#   skip 3 rows: 57-59
-#   continue: 60-79
 SAMPLE_START_ROW = 37
 SAMPLES_PER_BLOCK = 20
 ROWS_TO_SKIP = 3
 
-# Use images directly from the extracted folder
 IMAGE_DIR = "extracted_images_from_xlsm/media"
 
 
@@ -157,6 +138,20 @@ def parse_decimal(value):
         return None
 
 
+def round_3(value):
+    """
+    Round numeric values to exactly 3 decimals before writing to Excel.
+
+    Example:
+        0.05450 -> 0.055
+        1.00000 -> 1.000
+    """
+    if value is None:
+        return None
+
+    return round(float(value), 3)
+
+
 def read_text_auto_encoding(csv_file):
     """
     Reads CSV text trying common encodings.
@@ -193,14 +188,6 @@ def read_text_auto_encoding(csv_file):
 def read_input_dat(input_dat):
     """
     Reads input.dat.
-
-    Example input.dat:
-
-        Cuantificación_16_04_2026_12_59_38.csv
-        Cuantificación_17_04_2026_17_54_55.csv
-        Cuantificación_17_04_2026_18_14_31.csv
-
-    Empty lines and lines starting with # are ignored.
     """
     input_dat = Path(input_dat)
 
@@ -305,7 +292,11 @@ def find_header_indices(rows):
             if "CONCENTRACION" in cell or cell.startswith("CONC"):
                 concentration_idx = i
 
-        if sample_idx is not None and a882_idx is not None and concentration_idx is not None:
+        if (
+            sample_idx is not None
+            and a882_idx is not None
+            and concentration_idx is not None
+        ):
             print("\nDetected CSV columns:")
             print(f"  Nombre column: {sample_idx}")
             print(f"  A882 column: {a882_idx}")
@@ -351,8 +342,8 @@ def convert_sample_name(raw_name):
     """
     Converts:
 
-        SU 723 1  -> SU0723-ILL-26
-        SU 62 1   -> SU0062-ILL-26
+        SU 723 1 -> SU0723-ILL-26
+        SU 62 1  -> SU0062-ILL-26
 
     It omits the last number after the space.
 
@@ -439,7 +430,8 @@ def extract_standard_values_from_rows(rows, sample_idx, a882_idx, concentration_
 
             print(
                 f"Found Estándar {standard_number}: "
-                f"A882={a882_value}, Concentracion={concentration_value}"
+                f"A882={a882_value:.3f}, "
+                f"Concentracion={concentration_value:.3f}"
             )
 
     missing = [i for i in range(1, 8) if i not in standards]
@@ -453,12 +445,6 @@ def extract_standard_values_from_rows(rows, sample_idx, a882_idx, concentration_
 def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_idx):
     """
     Extracts all non-standard sample rows.
-
-    Example:
-
-        SU 723 1 -> SU0723-ILL-26
-        BLANCO   -> BLANCO
-        CONTROL  -> CONTROL
 
     It skips:
         - header row
@@ -506,10 +492,16 @@ def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_id
             }
         )
 
+        concentration_text = (
+            f"{concentration_value:.3f}"
+            if concentration_value is not None
+            else "None"
+        )
+
         print(
             f"Found sample: {raw_name} -> {sample_name}, "
-            f"A882={a882_value}, "
-            f"Concentracion={concentration_value}"
+            f"A882={a882_value:.3f}, "
+            f"Concentracion={concentration_text}"
         )
 
     if not samples:
@@ -562,15 +554,8 @@ def reinsert_images(wb, image_dir):
 
     images_by_sheet = {
         "P_DIS": [
-            # Top-left images moved one column to the right
             ("image2.jpeg", "B1", 0.3588),
             ("image3.png", "B3", 0.5148),
-
-            # Equation image moved to S20 and made 30% smaller
-            # Old scale:
-            #   0.55
-            # New scale:
-            #   0.55 * 0.70 = 0.385
             ("image4.png", "S20", 0.385),
         ],
 
@@ -624,29 +609,25 @@ def write_standard_values(ws, standards):
 
         CSV Concentracion -> Excel F15:F21
         CSV A882          -> Excel H15:H21
+
+    Values are rounded to 3 decimals and displayed as 0.000.
     """
     for standard_number in range(1, 8):
         row = START_ROW + standard_number - 1
 
-        concentration = standards[standard_number]["Concentracion"]
-        a882 = standards[standard_number]["A882"]
+        concentration = round_3(standards[standard_number]["Concentracion"])
+        a882 = round_3(standards[standard_number]["A882"])
 
         ws[f"{CONCENTRATION_COLUMN}{row}"] = concentration
         ws[f"{A882_COLUMN}{row}"] = a882
 
-        ws[f"{CONCENTRATION_COLUMN}{row}"].number_format = "0.00000"
-        ws[f"{A882_COLUMN}{row}"].number_format = "0.00000"
+        ws[f"{CONCENTRATION_COLUMN}{row}"].number_format = "0.000"
+        ws[f"{A882_COLUMN}{row}"].number_format = "0.000"
 
 
 def clear_old_sample_values(ws, max_samples=300):
     """
     Clears old sample values using the same general block pattern.
-
-    Example:
-        C37:C56, K37:K56
-        C60:C79, K60:K79
-        C83:C102, K83:K102
-        ...
 
     Clears:
         C = sample name
@@ -666,11 +647,7 @@ def write_sample_values(ws, samples):
         C37 = sample name
         K37 = A882
 
-    Default:
-        C37:C56,   K37:K56
-        C60:C79,   K60:K79
-        C83:C102,  K83:K102
-        ...
+    A882 values are rounded to 3 decimals and displayed as 0.000.
     """
     clear_old_sample_values(ws)
 
@@ -680,15 +657,17 @@ def write_sample_values(ws, samples):
         name_cell = f"{SAMPLE_NAME_COLUMN}{row}"
         a882_cell = f"{SAMPLE_A882_COLUMN}{row}"
 
-        ws[name_cell] = sample["sample_name"]
-        ws[a882_cell] = sample["A882"]
+        a882_value = round_3(sample["A882"])
 
-        ws[a882_cell].number_format = "0.00000"
+        ws[name_cell] = sample["sample_name"]
+        ws[a882_cell] = a882_value
+
+        ws[a882_cell].number_format = "0.000"
 
         print(
             f"Written sample {i + 1}: "
             f"{name_cell} = {sample['sample_name']}, "
-            f"{a882_cell} = {sample['A882']:.5f}"
+            f"{a882_cell} = {a882_value:.3f}"
         )
 
 
@@ -698,8 +677,6 @@ def create_output_path(csv_file, method):
 
         output/bray/Analizado_Bray_Cuantificacion_23_03_2026_12_52_11.xlsm
         output/olsen/Analizado_Olsen_Cuantificacion_23_03_2026_12_52_11.xlsm
-
-    If the method folder does not exist, it is created.
     """
     csv_stem = make_safe_filename(Path(csv_file).stem)
     method_key = method.lower()
@@ -762,9 +739,7 @@ def update_report(input_xlsm, csv_file, image_dir, method):
     # Standards 1-7 into P_DIS F15:F21 and H15:H21
     write_standard_values(ws, standards)
 
-    # Samples into P_DIS C/K using block pattern:
-    #   C = sample name
-    #   K = A882
+    # Samples into P_DIS C/K
     write_sample_values(ws, samples)
 
     # Reinsert fixed images
@@ -780,23 +755,24 @@ def update_report(input_xlsm, csv_file, image_dir, method):
     for standard_number in range(1, 8):
         row = START_ROW + standard_number - 1
 
+        concentration = round_3(standards[standard_number]["Concentracion"])
+        a882 = round_3(standards[standard_number]["A882"])
+
         print(
             f"  Estándar {standard_number}: "
-            f"{CONCENTRATION_COLUMN}{row} = "
-            f"{standards[standard_number]['Concentracion']:.5f}, "
-            f"{A882_COLUMN}{row} = "
-            f"{standards[standard_number]['A882']:.5f}"
+            f"{CONCENTRATION_COLUMN}{row} = {concentration:.3f}, "
+            f"{A882_COLUMN}{row} = {a882:.3f}"
         )
 
     print("\nSamples written in P_DIS:")
     for i, sample in enumerate(samples):
         row = get_sample_excel_row(i)
+        a882 = round_3(sample["A882"])
 
         print(
             f"  Sample {i + 1}, row {row}: "
             f"{SAMPLE_NAME_COLUMN}{row} = {sample['sample_name']}, "
-            f"{SAMPLE_A882_COLUMN}{row} = "
-            f"{sample['A882']:.5f}"
+            f"{SAMPLE_A882_COLUMN}{row} = {a882:.3f}"
         )
 
     return output_xlsm
