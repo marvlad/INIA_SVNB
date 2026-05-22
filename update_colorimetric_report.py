@@ -97,7 +97,8 @@ def get_template_path(method):
 
 def norm(text):
     """
-    Normalize text so accents and bad encoding do not break matching.
+    Normalize text so accents, lowercase/uppercase, and bad encoding
+    do not break matching.
     """
     if text is None:
         return ""
@@ -117,9 +118,14 @@ def norm(text):
 
 def parse_decimal(value):
     """
-    Converts:
-        0,05450 -> 0.05450
-        1,00000 -> 1.00000
+    Converts text values to float.
+
+    Examples:
+        0,05450  -> 0.05450
+        1,00000  -> 1.00000
+        -0,0123  -> -0.0123
+
+    Negative values are valid.
     """
     if value is None:
         return None
@@ -140,11 +146,12 @@ def parse_decimal(value):
 
 def round_3(value):
     """
-    Round numeric values to exactly 3 decimals before writing to Excel.
+    Round numeric values to 3 decimals before writing to Excel.
 
     Example:
-        0.05450 -> 0.055
-        1.00000 -> 1.000
+        0.05450  -> 0.055
+        1.00000  -> 1.000
+        -0.01234 -> -0.012
     """
     if value is None:
         return None
@@ -182,6 +189,7 @@ def read_text_auto_encoding(csv_file):
         f"WARNING: Could not detect CSV encoding cleanly for "
         f"{csv_file.name}. Removing null bytes."
     )
+
     return raw.decode("latin-1", errors="ignore").replace("\x00", "")
 
 
@@ -335,19 +343,28 @@ def make_safe_filename(text):
     text = str(text).strip()
     text = re.sub(r"[^\w\-]+", "_", text, flags=re.UNICODE)
     text = re.sub(r"_+", "_", text)
+
     return text.strip("_")
 
 
 def convert_sample_name(raw_name):
     """
-    Converts:
+    Converts sample names.
 
-        SU 723 1 -> SU0723-ILL-26
-        SU 62 1  -> SU0062-ILL-26
+    Examples:
+        SU 723 1   -> SU0723-ILL-26
+        SU 62 1    -> SU0062-ILL-26
+        su 1201    -> SU1201-ILL-26
+        SU 1201    -> SU1201-ILL-26
+        SU1201     -> SU1201-ILL-26
+        SU1201 1   -> SU1201-ILL-26
 
-    It omits the last number after the space.
+    It accepts:
+        - lowercase or uppercase su
+        - optional spaces between SU and the number
+        - optional final replicate number
 
-    If the name is not SU format, returns the original name.
+    If the name is not SU format, it returns the original name.
     """
     if raw_name is None:
         return ""
@@ -355,7 +372,7 @@ def convert_sample_name(raw_name):
     original = str(raw_name).strip()
     clean = norm(original)
 
-    match = re.search(r"\bSU\s*0*(\d+)\s+\d+\b", clean)
+    match = re.search(r"\bSU\s*0*(\d+)(?:\s+\d+)?\b", clean)
 
     if match:
         su_number = int(match.group(1))
@@ -454,8 +471,9 @@ def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_id
         C37 = sample name
         K37 = A882
 
-    Concentracion is still stored internally for printing/debugging,
-    but it is not written to K.
+    Important:
+        Negative A882 values are valid and copied to Excel.
+        Only non-numeric or empty A882 values are skipped.
     """
     samples = []
 
@@ -477,6 +495,8 @@ def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_id
         a882_value = parse_decimal(row[a882_idx])
         concentration_value = parse_decimal(row[concentration_idx])
 
+        # Do not skip negative A882.
+        # Skip only if A882 cannot be parsed as a number.
         if a882_value is None:
             print(f"WARNING: Could not parse sample A882 row: {row}")
             continue
@@ -648,6 +668,7 @@ def write_sample_values(ws, samples):
         K37 = A882
 
     A882 values are rounded to 3 decimals and displayed as 0.000.
+    Negative values are written normally.
     """
     clear_old_sample_values(ws)
 
