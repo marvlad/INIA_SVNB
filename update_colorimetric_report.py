@@ -124,8 +124,6 @@ def parse_decimal(value):
         0,05450  -> 0.05450
         1,00000  -> 1.00000
         -0,0123  -> -0.0123
-
-    Negative values are valid.
     """
     if value is None:
         return None
@@ -466,14 +464,15 @@ def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_id
     It skips:
         - header row
         - Estándar 1 to Estándar 7
+        - samples where A882 is negative
 
     Samples are written as:
         C37 = sample name
         K37 = A882
 
     Important:
-        Negative A882 values are valid and copied to Excel.
-        Only non-numeric or empty A882 values are skipped.
+        If A882 is negative, the complete sample row is skipped.
+        Neither the name nor the value is copied to Excel.
     """
     samples = []
 
@@ -495,10 +494,17 @@ def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_id
         a882_value = parse_decimal(row[a882_idx])
         concentration_value = parse_decimal(row[concentration_idx])
 
-        # Do not skip negative A882.
-        # Skip only if A882 cannot be parsed as a number.
+        # Skip if A882 cannot be parsed
         if a882_value is None:
             print(f"WARNING: Could not parse sample A882 row: {row}")
+            continue
+
+        # Fully skip the row if A882 is negative
+        if a882_value < 0:
+            print(
+                f"Skipping sample because A882 is negative: "
+                f"{raw_name}, A882={a882_value:.3f}"
+            )
             continue
 
         sample_name = convert_sample_name(raw_name)
@@ -534,7 +540,11 @@ def read_csv_data(csv_file):
     """
     Reads:
         - standards 1-7
-        - all sample rows
+        - all valid sample rows
+
+    Invalid sample rows:
+        - non-numeric A882
+        - negative A882
     """
     rows = read_csv_rows(csv_file)
     sample_idx, a882_idx, concentration_idx = find_header_indices(rows)
@@ -662,13 +672,12 @@ def clear_old_sample_values(ws, max_samples=300):
 
 def write_sample_values(ws, samples):
     """
-    Writes all samples in P_DIS using this general pattern:
+    Writes all valid samples in P_DIS using this general pattern:
 
         C37 = sample name
         K37 = A882
 
-    A882 values are rounded to 3 decimals and displayed as 0.000.
-    Negative values are written normally.
+    Negative A882 samples are already removed before this function.
     """
     clear_old_sample_values(ws)
 
@@ -760,7 +769,7 @@ def update_report(input_xlsm, csv_file, image_dir, method):
     # Standards 1-7 into P_DIS F15:F21 and H15:H21
     write_standard_values(ws, standards)
 
-    # Samples into P_DIS C/K
+    # Valid samples into P_DIS C/K
     write_sample_values(ws, samples)
 
     # Reinsert fixed images
