@@ -64,7 +64,7 @@ HTML_PAGE = """
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>INIA SVNB Report Pipeline</title>
+    <title>INIA P Report Tool :) </title>
 
     <style>
         body {
