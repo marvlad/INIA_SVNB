@@ -220,7 +220,7 @@ HTML_PAGE = """
 <body>
 <div class="container">
 
-    <h1>INIA SVNB Report Pipeline</h1>
+    <h1>INIA P Report Tool :) </h1>
 
     <div class="note">
         This main app runs the workflow from the root folder:
