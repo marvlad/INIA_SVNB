@@ -1,30 +1,18 @@
 # app.py
 # Main INIA_SVNB browser app
 #
-# This root app controls:
-#   1. Spectrometer CSV -> colorimetric report XLSM
-#   2. pH database update
-#   3. Add pH into generated XLSM reports
-#
-# Expected structure:
-#
-# INIA_SVNB/
-# ├── app.py
-# ├── update_colorimetric_report.py
-# ├── input/
-# ├── input.dat
-# ├── output/
-# ├── get_db/
-# │   └── build_ph_database.py
-# └── fill_ph/
-#     └── fill_ph_from_dat.py
-
+# Workflow:
+#   1. Read existing input.dat with spectrometer CSV names
+#   2. Run update_colorimetric_report.py
+#   3. Create input_for_ph.dat from generated Analizado_*.xlsm files
+#   4. Update pH database with fixed names in the root directory
+#   5. Fill pH into generated reports
+#   6. Save final files in final_report/bray or final_report/olsen
 
 from pathlib import Path
 import subprocess
 import sys
 import os
-import shutil
 import traceback
 import webbrowser
 from threading import Timer
@@ -42,6 +30,7 @@ INPUT_DIR = BASE_DIR / "input"
 INPUT_DAT = BASE_DIR / "input.dat"
 
 OUTPUT_DIR = BASE_DIR / "output"
+FINAL_REPORT_DIR = BASE_DIR / "final_report"
 
 UPDATE_COLOR_SCRIPT = BASE_DIR / "update_colorimetric_report.py"
 
@@ -50,6 +39,9 @@ BUILD_PH_SCRIPT = GET_DB_DIR / "build_ph_database.py"
 
 FILL_PH_DIR = BASE_DIR / "fill_ph"
 FILL_PH_SCRIPT = FILL_PH_DIR / "fill_ph_from_dat.py"
+
+PH_DATABASE_FILE = BASE_DIR / "ph_database_Ver03.sqlite"
+PH_CSV_FILE = BASE_DIR / "ph_database_Ver03.csv"
 
 HOST = "127.0.0.1"
 PORT = 5000
@@ -187,13 +179,6 @@ HTML_PAGE = """
             color: #333;
         }
 
-        .box {
-            background: #f1f1f1;
-            padding: 16px;
-            border-radius: 8px;
-            margin-top: 16px;
-        }
-
         .small {
             color: #666;
             font-size: 13px;
@@ -221,21 +206,13 @@ HTML_PAGE = """
             margin: 6px 0;
         }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 16px;
-            font-size: 14px;
-        }
-
-        th, td {
-            border: 1px solid #ccc;
-            padding: 7px;
-            text-align: left;
-        }
-
-        th {
-            background: #eee;
+        .path-box {
+            background: #f1f1f1;
+            padding: 10px;
+            border-radius: 6px;
+            font-family: Consolas, monospace;
+            font-size: 13px;
+            margin-top: 8px;
         }
     </style>
 </head>
@@ -246,25 +223,24 @@ HTML_PAGE = """
     <h1>INIA SVNB Report Pipeline</h1>
 
     <div class="note">
-        This main app runs the full workflow from the root folder:
+        This main app runs the workflow from the root folder:
         <br>
-        <b>spectrometer CSV → colorimetric XLSM → pH database → final XLSM with pH</b>
+        <b>input.dat spectrometer CSV list → colorimetric XLSM → pH database → final XLSM with pH</b>
     </div>
 
     <form method="post">
 
         <h2>1. Spectrometer CSV input</h2>
 
-        <label>Spectrometer CSV file path</label>
-        <input
-            type="text"
-            name="spectrometer_csv"
-            value="{{ values.spectrometer_csv }}"
-            placeholder="G:\\Mi unidad\\LABSAF ILLPA\\Cuantificación_23_03_2026_12_52_11.csv"
-        >
+        <div class="path-box">
+            Existing input DAT file:<br>
+            {{ input_dat_path }}
+        </div>
+
         <div class="small">
-            The app will copy this file into <b>INIA_SVNB/input/</b> and write <b>input.dat</b>.
-            If you leave it empty, the app will use the existing files already in <b>input/</b>.
+            This app now uses the existing <b>input.dat</b>.  
+            That file must contain the spectrometer CSV filenames, one per line.
+            The CSV files must be inside <b>input/</b>.
         </div>
 
         <label>Colorimetric method</label>
@@ -286,21 +262,13 @@ HTML_PAGE = """
 
         <div class="row">
             <div class="col">
-                <label>pH SQLite output</label>
-                <input
-                    type="text"
-                    name="ph_database_file"
-                    value="{{ values.ph_database_file }}"
-                >
+                <label>pH database output</label>
+                <div class="path-box">{{ ph_database_file }}</div>
             </div>
 
             <div class="col">
                 <label>pH CSV output</label>
-                <input
-                    type="text"
-                    name="ph_csv_file"
-                    value="{{ values.ph_csv_file }}"
-                >
+                <div class="path-box">{{ ph_csv_file }}</div>
             </div>
         </div>
 
@@ -325,6 +293,12 @@ HTML_PAGE = """
         </div>
 
         <h2>3. Fill pH into generated reports</h2>
+
+        <div class="small">
+            The app will automatically create <b>input_for_ph.dat</b> from the generated
+            <b>Analizado_*.xlsm</b> files in <b>output/bray</b> or <b>output/olsen</b>.
+            Final files will be written to <b>final_report/bray</b> or <b>final_report/olsen</b>.
+        </div>
 
         <div class="row">
             <div class="col">
@@ -420,11 +394,11 @@ HTML_PAGE = """
 
     {% if files %}
         <div class="files">
-            <h2>Generated final files with pH</h2>
+            <h2>Final reports with pH</h2>
 
             {% for item in files %}
                 <a href="/download/{{ item.method }}/{{ item.filename }}" target="_blank">
-                    {{ item.method }}/with_ph/{{ item.filename }}
+                    final_report/{{ item.method }}/{{ item.filename }}
                 </a>
             {% endfor %}
         </div>
@@ -437,13 +411,10 @@ HTML_PAGE = """
 
 
 # ============================================================
-# SMALL HELPERS
+# HELPERS
 # ============================================================
 
 def run_command(command, cwd):
-    """
-    Run a Python command and return output text plus success status.
-    """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
@@ -473,61 +444,60 @@ def run_command(command, cwd):
     return success, output
 
 
-def copy_spectrometer_csv_to_input(csv_path_text):
-    """
-    Copy the selected spectrometer CSV to INIA_SVNB/input/
-    and write INIA_SVNB/input.dat with that CSV filename.
-
-    If csv_path_text is empty, this function does nothing.
-    """
-    if not csv_path_text.strip():
-        return True, "No CSV path provided. Using existing input/ and input.dat.\n"
-
-    source_csv = Path(csv_path_text.strip())
-
-    if not source_csv.exists():
-        return False, f"Spectrometer CSV not found:\n  {source_csv}\n"
-
-    if source_csv.suffix.lower() != ".csv":
-        return False, f"Selected file is not a CSV:\n  {source_csv}\n"
-
-    INPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    destination_csv = INPUT_DIR / source_csv.name
-
-    shutil.copy2(source_csv, destination_csv)
-
-    with open(INPUT_DAT, "w", encoding="utf-8") as f:
-        f.write(source_csv.name + "\n")
-
-    msg = ""
-    msg += "Copied spectrometer CSV:\n"
-    msg += f"  From: {source_csv}\n"
-    msg += f"  To:   {destination_csv}\n"
-    msg += "Updated input.dat:\n"
-    msg += f"  {INPUT_DAT}\n"
-    msg += f"  Content: {source_csv.name}\n"
-
-    return True, msg
-
-
 def get_methods(method):
-    """
-    Convert selected method into list.
-    """
     if method == "Both":
         return ["Bray", "Olsen"]
 
     return [method]
 
 
-def generate_colorimetric_reports(method, spectrometer_csv):
-    """
-    Run update_colorimetric_report.py for Bray/Olsen/Both.
-    """
+def check_input_dat():
     output = ""
 
-    ok, msg = copy_spectrometer_csv_to_input(spectrometer_csv)
+    if not INPUT_DAT.exists():
+        return False, f"input.dat was not found:\n  {INPUT_DAT}\n"
+
+    if not INPUT_DIR.exists():
+        return False, f"input folder was not found:\n  {INPUT_DIR}\n"
+
+    with open(INPUT_DAT, "r", encoding="utf-8-sig") as f:
+        lines = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
+    if not lines:
+        return False, f"input.dat is empty:\n  {INPUT_DAT}\n"
+
+    output += "input.dat found:\n"
+    output += f"  {INPUT_DAT}\n"
+    output += f"CSV names listed: {len(lines)}\n"
+
+    missing = []
+
+    for csv_name in lines:
+        csv_path = INPUT_DIR / csv_name
+
+        if not csv_path.exists():
+            missing.append(csv_name)
+
+    if missing:
+        output += "\nMissing CSV files inside input/:\n"
+        for name in missing:
+            output += f"  - {name}\n"
+
+        return False, output
+
+    output += "\nAll CSV files listed in input.dat were found inside input/.\n"
+
+    return True, output
+
+
+def generate_colorimetric_reports(method):
+    output = ""
+
+    ok, msg = check_input_dat()
     output += msg
 
     if not ok:
@@ -561,13 +531,19 @@ def generate_colorimetric_reports(method, spectrometer_csv):
         else:
             output += f"\nOK: {one_method} reports generated.\n"
 
+        try:
+            dat_msg = create_input_for_ph_dat(one_method)
+            output += "\n"
+            output += dat_msg
+        except Exception:
+            all_success = False
+            output += "\nERROR creating input_for_ph.dat:\n"
+            output += traceback.format_exc()
+
     return all_success, output
 
 
 def update_ph_database(values):
-    """
-    Run get_db/build_ph_database.py with external arguments.
-    """
     if not BUILD_PH_SCRIPT.exists():
         return False, f"Script not found:\n  {BUILD_PH_SCRIPT}\n"
 
@@ -584,10 +560,10 @@ def update_ph_database(values):
         ph_folder,
 
         "--database-file",
-        values["ph_database_file"],
+        str(PH_DATABASE_FILE),
 
         "--csv-file",
-        values["ph_csv_file"],
+        str(PH_CSV_FILE),
 
         "--file-name-filter",
         values["ph_file_filter"],
@@ -603,33 +579,35 @@ def update_ph_database(values):
     return success, output
 
 
-def make_input_for_ph_dat_from_generated_reports(method):
+def create_input_for_ph_dat(method):
     """
-    Create a temporary input_for_ph.dat using all generated XLSM files
-    from output/bray or output/olsen.
+    Create:
+        output/bray/input_for_ph.dat
+        output/olsen/input_for_ph.dat
 
-    The fill_ph script will read this DAT file and process those XLSM files.
+    using generated:
+        output/bray/Analizado_*.xlsm
+        output/olsen/Analizado_*.xlsm
     """
     method_lower = method.lower()
-
     method_output_dir = OUTPUT_DIR / method_lower
 
     if not method_output_dir.exists():
         raise FileNotFoundError(
-            f"Generated report folder not found: {method_output_dir}"
+            f"Generated output folder does not exist: {method_output_dir}"
         )
 
     xlsm_files = sorted(
         [
             path
-            for path in method_output_dir.glob("*.xlsm")
+            for path in method_output_dir.glob("Analizado*.xlsm")
             if path.is_file()
         ]
     )
 
     if not xlsm_files:
         raise FileNotFoundError(
-            f"No generated .xlsm files found in: {method_output_dir}"
+            f"No Analizado*.xlsm files found in: {method_output_dir}"
         )
 
     dat_file = method_output_dir / "input_for_ph.dat"
@@ -638,28 +616,23 @@ def make_input_for_ph_dat_from_generated_reports(method):
         for xlsm_file in xlsm_files:
             f.write(xlsm_file.name + "\n")
 
-    return dat_file, method_output_dir, xlsm_files
+    msg = ""
+    msg += "Created input_for_ph.dat:\n"
+    msg += f"  {dat_file}\n"
+    msg += f"Files listed: {len(xlsm_files)}\n"
+
+    for xlsm_file in xlsm_files:
+        msg += f"  - {xlsm_file.name}\n"
+
+    return msg
 
 
 def fill_ph_into_generated_reports(method, values):
-    """
-    Run fill_ph/fill_ph_from_dat.py over generated XLSM files.
-
-    Input:
-        output/bray/*.xlsm
-        output/olsen/*.xlsm
-
-    Output:
-        output/bray/with_ph/*.xlsm
-        output/olsen/with_ph/*.xlsm
-    """
     if not FILL_PH_SCRIPT.exists():
         return False, f"Script not found:\n  {FILL_PH_SCRIPT}\n"
 
-    ph_csv_file = Path(values["ph_csv_file"])
-
-    if not ph_csv_file.exists():
-        return False, f"pH CSV file not found:\n  {ph_csv_file}\n"
+    if not PH_CSV_FILE.exists():
+        return False, f"pH CSV file not found:\n  {PH_CSV_FILE}\n"
 
     all_success = True
     output = ""
@@ -673,15 +646,20 @@ def fill_ph_into_generated_reports(method, values):
         output += "============================================================\n"
 
         try:
-            dat_file, generated_dir, xlsm_files = make_input_for_ph_dat_from_generated_reports(one_method)
+            dat_msg = create_input_for_ph_dat(one_method)
+            output += dat_msg
 
-            with_ph_dir = generated_dir / "with_ph"
-            with_ph_dir.mkdir(parents=True, exist_ok=True)
+            generated_dir = OUTPUT_DIR / method_lower
+            dat_file = generated_dir / "input_for_ph.dat"
 
-            output += f"Generated report folder:\n  {generated_dir}\n"
-            output += f"Temporary input_for_ph.dat:\n  {dat_file}\n"
-            output += f"Files to process: {len(xlsm_files)}\n"
-            output += f"Final output folder:\n  {with_ph_dir}\n"
+            final_method_dir = FINAL_REPORT_DIR / method_lower
+            final_method_dir.mkdir(parents=True, exist_ok=True)
+
+            output += "\n"
+            output += "Input generated reports folder:\n"
+            output += f"  {generated_dir}\n"
+            output += "Final report folder:\n"
+            output += f"  {final_method_dir}\n"
 
             command = [
                 sys.executable,
@@ -694,10 +672,10 @@ def fill_ph_into_generated_reports(method, values):
                 str(generated_dir),
 
                 "--ph-csv",
-                str(ph_csv_file),
+                str(PH_CSV_FILE),
 
                 "--output-dir",
-                str(with_ph_dir),
+                str(final_method_dir),
 
                 "--sheet-name",
                 values["fill_sheet_name"],
@@ -732,22 +710,17 @@ def fill_ph_into_generated_reports(method, values):
 
         except Exception:
             all_success = False
-            output += "\nERROR while preparing pH filling:\n"
+            output += "\nERROR while adding pH:\n"
             output += traceback.format_exc()
 
     return all_success, output
 
 
-def list_final_with_ph_files():
-    """
-    List files in:
-        output/bray/with_ph/
-        output/olsen/with_ph/
-    """
+def list_final_report_files():
     results = []
 
     for method_lower in ["bray", "olsen"]:
-        folder = OUTPUT_DIR / method_lower / "with_ph"
+        folder = FINAL_REPORT_DIR / method_lower
 
         if not folder.exists():
             continue
@@ -770,12 +743,9 @@ def open_browser():
 
 def get_default_values():
     return {
-        "spectrometer_csv": "",
         "method": "Bray",
 
         "ph_folder": r"G:\Mi unidad\LABSAF ILLPA\1. Documentos Internos\7.5 Registros Tecnicos\2026\SUELOS\1.pH",
-        "ph_database_file": str(BASE_DIR / "ph_database_Ver03.sqlite"),
-        "ph_csv_file": str(BASE_DIR / "ph_database_Ver03.csv"),
         "ph_file_filter": "Ver.03",
         "ph_sheet_name": "F-103",
 
@@ -808,7 +778,7 @@ def index():
     status = None
     success = None
     output = ""
-    files = list_final_with_ph_files()
+    files = list_final_report_files()
 
     if request.method == "GET":
         values = get_default_values()
@@ -820,6 +790,9 @@ def index():
             success=success,
             output=output,
             files=files,
+            input_dat_path=str(INPUT_DAT),
+            ph_database_file=str(PH_DATABASE_FILE),
+            ph_csv_file=str(PH_CSV_FILE),
         )
 
     values = get_values_from_form()
@@ -829,7 +802,6 @@ def index():
         if action == "generate_reports":
             success, output = generate_colorimetric_reports(
                 method=values["method"],
-                spectrometer_csv=values["spectrometer_csv"],
             )
 
             if success:
@@ -862,7 +834,6 @@ def index():
 
             s1, out1 = generate_colorimetric_reports(
                 method=values["method"],
-                spectrometer_csv=values["spectrometer_csv"],
             )
 
             full_output += "\n\n================ STEP 1: GENERATE REPORTS ================\n"
@@ -908,7 +879,7 @@ def index():
         status = "Unexpected error."
         output = traceback.format_exc()
 
-    files = list_final_with_ph_files()
+    files = list_final_report_files()
 
     return render_template_string(
         HTML_PAGE,
@@ -917,6 +888,9 @@ def index():
         success=success,
         output=output,
         files=files,
+        input_dat_path=str(INPUT_DAT),
+        ph_database_file=str(PH_DATABASE_FILE),
+        ph_csv_file=str(PH_CSV_FILE),
     )
 
 
@@ -927,7 +901,7 @@ def download_file(method, filename):
     if method not in ["bray", "olsen"]:
         abort(404)
 
-    folder = OUTPUT_DIR / method / "with_ph"
+    folder = FINAL_REPORT_DIR / method
     file_path = folder / filename
 
     if not file_path.exists():
@@ -947,6 +921,7 @@ def download_file(method, filename):
 if __name__ == "__main__":
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    FINAL_REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     Timer(1.0, open_browser).start()
 
