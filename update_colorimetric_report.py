@@ -145,11 +145,6 @@ def parse_decimal(value):
 def round_3(value):
     """
     Round numeric values to 3 decimals before writing to Excel.
-
-    Example:
-        0.05450  -> 0.055
-        1.00000  -> 1.000
-        -0.01234 -> -0.012
     """
     if value is None:
         return None
@@ -313,6 +308,66 @@ def find_header_indices(rows):
     raise ValueError("Could not find Nombre, A882 and Concentracion headers in CSV.")
 
 
+def reject_negative_a882_rows(rows, sample_idx, a882_idx):
+    """
+    Hard filter at CSV-read level.
+
+    Removes any sample row where A882 < 0 before extracting samples
+    and before writing anything to Excel.
+
+    Keeps:
+        - header rows
+        - standards
+        - rows with non-negative A882
+
+    Rejects:
+        - sample rows with negative A882
+    """
+    filtered_rows = []
+
+    rejected_count = 0
+
+    for row in rows:
+        if len(row) <= max(sample_idx, a882_idx):
+            filtered_rows.append(row)
+            continue
+
+        raw_name = str(row[sample_idx]).strip()
+        clean_name = norm(raw_name)
+
+        # Keep header row
+        if "NOMBRE" in clean_name:
+            filtered_rows.append(row)
+            continue
+
+        # Keep standards
+        if re.search(r"EST[A-Z]*NDAR\s*\d+", clean_name):
+            filtered_rows.append(row)
+            continue
+
+        a882_value = parse_decimal(row[a882_idx])
+
+        # Keep non-numeric rows so the normal warning system handles them later
+        if a882_value is None:
+            filtered_rows.append(row)
+            continue
+
+        # Fully reject negative A882 rows
+        if a882_value < 0:
+            rejected_count += 1
+            print(
+                f"Rejected from CSV input because A882 is negative: "
+                f"{raw_name}, A882={a882_value:.3f}"
+            )
+            continue
+
+        filtered_rows.append(row)
+
+    print(f"\nNegative A882 sample rows rejected before extraction: {rejected_count}")
+
+    return filtered_rows
+
+
 def extract_date_from_filename(csv_file):
     """
     Extracts date from filename like:
@@ -356,13 +411,6 @@ def convert_sample_name(raw_name):
         SU 1201    -> SU1201-ILL-26
         SU1201     -> SU1201-ILL-26
         SU1201 1   -> SU1201-ILL-26
-
-    It accepts:
-        - lowercase or uppercase su
-        - optional spaces between SU and the number
-        - optional final replicate number
-
-    If the name is not SU format, it returns the original name.
     """
     if raw_name is None:
         return ""
@@ -395,7 +443,6 @@ def get_sample_excel_row(
         37-56
         60-79
         83-102
-        ...
     """
     block = sample_index // samples_per_block
     position = sample_index % samples_per_block
@@ -466,13 +513,9 @@ def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_id
         - Estándar 1 to Estándar 7
         - samples where A882 is negative
 
-    Samples are written as:
-        C37 = sample name
-        K37 = A882
-
     Important:
-        If A882 is negative, the complete sample row is skipped.
-        Neither the name nor the value is copied to Excel.
+        The main negative filter already happens in read_csv_data().
+        The negative check here is only a second safety protection.
     """
     samples = []
 
@@ -494,12 +537,11 @@ def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_id
         a882_value = parse_decimal(row[a882_idx])
         concentration_value = parse_decimal(row[concentration_idx])
 
-        # Skip if A882 cannot be parsed
         if a882_value is None:
             print(f"WARNING: Could not parse sample A882 row: {row}")
             continue
 
-        # Fully skip the row if A882 is negative
+        # Safety check: reject negative values if any passed the first filter
         if a882_value < 0:
             print(
                 f"Skipping sample because A882 is negative: "
@@ -531,7 +573,7 @@ def extract_sample_values_from_rows(rows, sample_idx, a882_idx, concentration_id
         )
 
     if not samples:
-        raise ValueError("No sample rows found after standards.")
+        raise ValueError("No valid sample rows found after filtering negative A882 values.")
 
     return samples
 
@@ -540,14 +582,22 @@ def read_csv_data(csv_file):
     """
     Reads:
         - standards 1-7
-        - all valid sample rows
+        - valid sample rows
 
-    Invalid sample rows:
-        - non-numeric A882
-        - negative A882
+    Important:
+        Negative A882 sample rows are rejected immediately after reading
+        the CSV rows and before extracting samples.
     """
     rows = read_csv_rows(csv_file)
+
     sample_idx, a882_idx, concentration_idx = find_header_indices(rows)
+
+    # HARD FILTER BEFORE SAMPLE EXTRACTION
+    rows = reject_negative_a882_rows(
+        rows=rows,
+        sample_idx=sample_idx,
+        a882_idx=a882_idx,
+    )
 
     standards = extract_standard_values_from_rows(
         rows=rows,
@@ -639,8 +689,6 @@ def write_standard_values(ws, standards):
 
         CSV Concentracion -> Excel F15:F21
         CSV A882          -> Excel H15:H21
-
-    Values are rounded to 3 decimals and displayed as 0.000.
     """
     for standard_number in range(1, 8):
         row = START_ROW + standard_number - 1
@@ -672,12 +720,13 @@ def clear_old_sample_values(ws, max_samples=300):
 
 def write_sample_values(ws, samples):
     """
-    Writes all valid samples in P_DIS using this general pattern:
+    Writes valid samples in P_DIS:
 
         C37 = sample name
         K37 = A882
 
-    Negative A882 samples are already removed before this function.
+    Negative A882 samples should never arrive here because they are
+    rejected in read_csv_data().
     """
     clear_old_sample_values(ws)
 
@@ -688,6 +737,14 @@ def write_sample_values(ws, samples):
         a882_cell = f"{SAMPLE_A882_COLUMN}{row}"
 
         a882_value = round_3(sample["A882"])
+
+        # Final safety check before writing to Excel
+        if a882_value is None or a882_value < 0:
+            print(
+                f"Safety skip before Excel write: "
+                f"{sample.get('sample_name', '')}, A882={a882_value}"
+            )
+            continue
 
         ws[name_cell] = sample["sample_name"]
         ws[a882_cell] = a882_value
@@ -742,7 +799,7 @@ def update_report(input_xlsm, csv_file, image_dir, method):
     print(f"Images: {image_dir}")
     print(f"Output: {output_xlsm}")
 
-    # Read CSV data
+    # Read CSV data with negative A882 rows already removed
     date_value = extract_date_from_filename(csv_file)
     standards, samples = read_csv_data(csv_file)
 
