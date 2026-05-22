@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 import os
+import webbrowser
+from threading import Timer
 
 from flask import Flask, request, render_template_string, send_from_directory, abort
 
@@ -13,6 +15,10 @@ app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 SCRIPT_PATH = BASE_DIR / "update_colorimetric_report.py"
 OUTPUT_DIR = BASE_DIR / "output"
+
+HOST = "127.0.0.1"
+PORT = 5000
+URL = f"http://{HOST}:{PORT}"
 
 
 HTML_PAGE = """
@@ -145,6 +151,13 @@ HTML_PAGE = """
 </body>
 </html>
 """
+
+
+def open_browser():
+    """
+    Open the Flask app automatically in the default browser.
+    """
+    webbrowser.open_new(URL)
 
 
 def list_generated_files(method):
@@ -289,4 +302,5 @@ def download_file(method, filename):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    Timer(1.0, open_browser).start()
+    app.run(host=HOST, port=PORT, debug=False)
