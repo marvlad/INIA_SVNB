@@ -84,34 +84,32 @@ def detect_method(path):
 
 def settings_for_version(version):
     """
-    Corrected extraction rules.
+    Corrected rules.
 
     Ver.02:
-      codigo in C
-      tipo in D
-      resultado in O
-      date in E10
+      codigo = C
+      tipo = E
+      resultado = P
+      fecha = E10
       password = 12
 
     Ver.04:
-      codigo in C
-      tipo in F
-      resultado in Q
-      date in T12
-      no password
+      codigo = C
+      tipo = F
+      resultado = Q
+      fecha = T12
 
     Ver.05:
-      codigo in C
-      tipo in F
-      resultado in Q
-      date in T13
-      no password
+      codigo = C
+      tipo = F
+      resultado = Q
+      fecha = T12
     """
     if version == "Ver.02":
         return {
             "codigo_col": "C",
-            "tipo_col": "D",
-            "resultado_col": "O",
+            "tipo_col": "E",
+            "resultado_col": "P",
             "date_cell": "E10",
             "password": "12",
         }
@@ -130,7 +128,7 @@ def settings_for_version(version):
             "codigo_col": "C",
             "tipo_col": "F",
             "resultado_col": "Q",
-            "date_cell": "T13",
+            "date_cell": "T12",
             "password": None,
         }
 
@@ -138,7 +136,7 @@ def settings_for_version(version):
         "codigo_col": "C",
         "tipo_col": "F",
         "resultado_col": "Q",
-        "date_cell": "T13",
+        "date_cell": "T12",
         "password": None,
     }
 
