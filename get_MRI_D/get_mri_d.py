@@ -84,38 +84,61 @@ def detect_method(path):
 
 def settings_for_version(version):
     """
+    Corrected extraction rules.
+
     Ver.02:
-      tipo in E
-      resultado in P
-      date in U4
+      codigo in C
+      tipo in D
+      resultado in O
+      date in E10
       password = 12
 
-    Ver.04 / Ver.05:
+    Ver.04:
+      codigo in C
       tipo in F
       resultado in Q
-      date in V4
+      date in T12
+      no password
+
+    Ver.05:
+      codigo in C
+      tipo in F
+      resultado in Q
+      date in T13
       no password
     """
     if version == "Ver.02":
         return {
-            "tipo_col": "E",
-            "resultado_col": "P",
-            "date_cell": "U4",
+            "codigo_col": "C",
+            "tipo_col": "D",
+            "resultado_col": "O",
+            "date_cell": "E10",
             "password": "12",
         }
 
-    if version in ("Ver.04", "Ver.05"):
+    if version == "Ver.04":
         return {
+            "codigo_col": "C",
             "tipo_col": "F",
             "resultado_col": "Q",
-            "date_cell": "V4",
+            "date_cell": "T12",
+            "password": None,
+        }
+
+    if version == "Ver.05":
+        return {
+            "codigo_col": "C",
+            "tipo_col": "F",
+            "resultado_col": "Q",
+            "date_cell": "T13",
             "password": None,
         }
 
     return {
+        "codigo_col": "C",
         "tipo_col": "F",
         "resultado_col": "Q",
-        "date_cell": "V4",
+        "date_cell": "T13",
         "password": None,
     }
 
@@ -168,6 +191,7 @@ def normalize_date(value, fallback=""):
         "%d/%m/%Y",
         "%d-%m-%y",
         "%d-%m-%Y",
+        "%Y-%m-%d",
     ):
         try:
             return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
@@ -288,6 +312,8 @@ def create_database(sqlite_path):
             source_file TEXT,
             source_sheet TEXT,
             source_row INTEGER,
+
+            codigo_col TEXT,
             tipo_col TEXT,
             resultado_col TEXT,
 
@@ -302,6 +328,7 @@ def create_database(sqlite_path):
     cur.execute("CREATE INDEX idx_color_metodo ON colorimetric_results (metodo)")
     cur.execute("CREATE INDEX idx_color_version ON colorimetric_results (version)")
     cur.execute("CREATE INDEX idx_color_fecha ON colorimetric_results (fecha)")
+    cur.execute("CREATE INDEX idx_color_source ON colorimetric_results (source_file, source_row)")
 
     conn.commit()
     return conn
@@ -325,12 +352,14 @@ def insert_record(conn, record):
             source_file,
             source_sheet,
             source_row,
+
+            codigo_col,
             tipo_col,
             resultado_col,
 
             duplicated_from_source_row
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["codigo_muestra"],
@@ -345,6 +374,8 @@ def insert_record(conn, record):
             record["source_file"],
             record["source_sheet"],
             record["source_row"],
+
+            record["codigo_col"],
             record["tipo_col"],
             record["resultado_col"],
 
@@ -397,6 +428,8 @@ def make_record_from_row(
         "source_file": source_file,
         "source_sheet": ws.title,
         "source_row": row,
+
+        "codigo_col": codigo_col,
         "tipo_col": tipo_col,
         "resultado_col": resultado_col,
 
@@ -423,6 +456,7 @@ def extract_records_from_workbook(
     metodo = detect_method(excel_file)
     settings = settings_for_version(version)
 
+    codigo_col = settings["codigo_col"]
     tipo_col = settings["tipo_col"]
     resultado_col = settings["resultado_col"]
     date_cell = settings["date_cell"]
@@ -438,6 +472,7 @@ def extract_records_from_workbook(
     print(f"Version:       {version}")
     print(f"Method:        {metodo}")
     print(f"Sheet:         {sheet_name}")
+    print(f"Codigo column: {codigo_col}")
     print(f"Tipo column:   {tipo_col}")
     print(f"Result column: {resultado_col}")
     print(f"Date cell:     {date_cell}")
@@ -476,7 +511,7 @@ def extract_records_from_workbook(
                 ws=ws,
                 row=row,
                 categoria="MRI",
-                codigo_col="C",
+                codigo_col=codigo_col,
                 tipo_col=tipo_col,
                 resultado_col=resultado_col,
                 metodo=metodo,
@@ -505,7 +540,7 @@ def extract_records_from_workbook(
                 ws=ws,
                 row=row,
                 categoria="D",
-                codigo_col="C",
+                codigo_col=codigo_col,
                 tipo_col=tipo_col,
                 resultado_col=resultado_col,
                 metodo=metodo,
@@ -529,11 +564,7 @@ def extract_records_from_workbook(
                         f"resultado={record['resultado']}"
                     )
 
-            # ----------------------------------------------------
-            # New requirement:
-            # also extract the row immediately below D.
-            # This is the sample duplicated by the D row.
-            # ----------------------------------------------------
+            # Also extract row immediately below D
             below_row = row + 1
 
             if below_row <= ws.max_row:
@@ -541,7 +572,7 @@ def extract_records_from_workbook(
                     ws=ws,
                     row=below_row,
                     categoria="D_BELOW",
-                    codigo_col="C",
+                    codigo_col=codigo_col,
                     tipo_col=tipo_col,
                     resultado_col=resultado_col,
                     metodo=metodo,
@@ -655,6 +686,7 @@ def export_csv(records, csv_path):
         "source_file",
         "source_sheet",
         "source_row",
+        "codigo_col",
         "tipo_col",
         "resultado_col",
         "duplicated_from_source_row",
@@ -693,9 +725,9 @@ def build_colorimetric_database(
     print(f"CSV output: {csv_path}")
     print("")
     print("Rules:")
-    print("  Ver.02: tipo=E, resultado=P, fecha=U4, password=12")
-    print("  Ver.04: tipo=F, resultado=Q, fecha=V4")
-    print("  Ver.05: tipo=F, resultado=Q, fecha=V4")
+    print("  Ver.02: codigo=C, tipo=D, resultado=O, fecha=E10, password=12")
+    print("  Ver.04: codigo=C, tipo=F, resultado=Q, fecha=T12")
+    print("  Ver.05: codigo=C, tipo=F, resultado=Q, fecha=T13")
     print("  Extract rows where tipo is MRI")
     print("  Extract rows where tipo is D")
     print("  Also extract the row immediately below every D as D_BELOW")
