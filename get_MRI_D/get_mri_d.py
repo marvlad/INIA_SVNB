@@ -61,15 +61,14 @@ def extract_result_value(value):
     Keep whatever Excel has.
 
     Returns:
-        resultado_text
-        resultado_num
+      resultado_text
+      resultado_num
 
     Examples:
-        5.23      -> ("5.23", 5.23)
-        "5,23"    -> ("5,23", 5.23)
-        "<0.01"   -> ("<0.01", None)
-        "ND"      -> ("ND", None)
-        ""        -> ("", None)
+      5.23    -> ("5.23", 5.23)
+      "5,23"  -> ("5,23", 5.23)
+      "<0.01" -> ("<0.01", None)
+      "ND"    -> ("ND", None)
     """
     text = normalize_text(value)
 
@@ -77,7 +76,6 @@ def extract_result_value(value):
         return "", None
 
     number = parse_number(value)
-
     return text, number
 
 
@@ -133,55 +131,73 @@ def detect_method(path):
     return "UNKNOWN"
 
 
-def table_rows_for_version(version):
-    """
-    Fixed table positions.
-
-    Ver.02:
-      header row = 29
-      data starts = 30
-
-    Ver.04 / Ver.05:
-      header row = 30
-      data starts = 31
-    """
-    if version == "Ver.02":
-        return 29, 30
-
-    if version in ("Ver.04", "Ver.05"):
-        return 30, 31
-
-    return 30, 31
-
-
 def settings_for_version(version):
     """
-    Version settings.
+    Final fixed rules.
 
-    We no longer depend on fixed tipo/resultado columns.
-    The extractor searches the whole row.
+    Ver.02:
+      data starts row = 30
+      codigo = C
+      tipo = E
+      resultado = P
+      fecha = E10
+      password = 12
+
+    Ver.04:
+      data starts row = 31
+      codigo = C
+      tipo = F
+      resultado = Q
+      fecha = T12
+
+    Ver.05:
+      data starts row = 31
+      codigo = C
+      tipo = F
+      resultado = Q
+      fecha = T12
     """
     if version == "Ver.02":
         return {
             "password": "12",
             "date_cells": ["E10", "C10"],
+            "header_row": 29,
+            "start_row": 30,
+            "codigo_col": "C",
+            "tipo_col": "E",
+            "resultado_col": "P",
         }
 
     if version == "Ver.04":
         return {
             "password": None,
             "date_cells": ["T12", "T13", "V4"],
+            "header_row": 30,
+            "start_row": 31,
+            "codigo_col": "C",
+            "tipo_col": "F",
+            "resultado_col": "Q",
         }
 
     if version == "Ver.05":
         return {
             "password": None,
             "date_cells": ["T12", "T13", "V4"],
+            "header_row": 30,
+            "start_row": 31,
+            "codigo_col": "C",
+            "tipo_col": "F",
+            "resultado_col": "Q",
         }
 
     return {
         "password": None,
         "date_cells": ["T12", "T13", "V4", "E10", "C10"],
+        "header_row": 30,
+        "start_row": 31,
+        "codigo_col": "C",
+        "tipo_col": "F",
+        "resultado_col": "Q",
     }
 
 
@@ -333,181 +349,6 @@ def get_sheet(wb, preferred_sheet="P_DIS"):
 
 
 # ============================================================
-# WHOLE ROW EXTRACTION
-# ============================================================
-
-def find_tipo_in_row(ws, row, max_col=None):
-    """
-    Search the whole row for MRI or D/D1/D21/etc.
-
-    Returns:
-        categoria, tipo, tipo_col, raw_tipo
-    """
-    if max_col is None:
-        max_col = ws.max_column
-
-    for col_idx in range(1, max_col + 1):
-        cell = ws.cell(row=row, column=col_idx)
-        raw_tipo = cell.value
-        categoria = is_mri_or_d(raw_tipo)
-
-        if categoria is not None:
-            tipo_col = cell.column_letter
-            return categoria, normalize_tipo(raw_tipo), tipo_col, normalize_text(raw_tipo)
-
-    return None, "", "", ""
-
-
-def should_skip_result_candidate(text):
-    """
-    Skip obvious labels/codes/non-result cells.
-    """
-    text_upper = normalize_text(text).upper()
-
-    if text_upper == "":
-        return True
-
-    if "SU" in text_upper:
-        return True
-
-    if text_upper in ("MRI", "D"):
-        return True
-
-    if re.match(r"^D\d*$", text_upper):
-        return True
-
-    labels = [
-        "CODIGO",
-        "CÓDIGO",
-        "MUESTRA",
-        "TIPO",
-        "RESULTADO",
-        "CLIENTE",
-        "SOLICITANTE",
-        "FECHA",
-        "ANALISIS",
-        "ANÁLISIS",
-        "METODO",
-        "MÉTODO",
-        "UNIDAD",
-        "OBSERV",
-    ]
-
-    for label in labels:
-        if label in text_upper:
-            return True
-
-    return False
-
-
-def find_resultado_in_row(ws, row, tipo_col=None, max_col=None):
-    """
-    Search the whole row for the result value.
-
-    It keeps text or numeric values.
-    It ignores empty cells and obvious non-result cells.
-    It starts searching after the tipo column when possible.
-
-    Returns:
-        resultado_text, resultado_num, resultado_col, raw_resultado, tried
-    """
-    if max_col is None:
-        max_col = ws.max_column
-
-    start_col_idx = 1
-
-    if tipo_col:
-        start_col_idx = ws[f"{tipo_col}{row}"].column + 1
-
-    tried = []
-
-    for col_idx in range(start_col_idx, max_col + 1):
-        cell = ws.cell(row=row, column=col_idx)
-        raw = cell.value
-        text, number = extract_result_value(raw)
-
-        tried.append(f"{cell.column_letter}{row}={raw!r}")
-
-        if should_skip_result_candidate(text):
-            continue
-
-        # Prefer numeric values, but accept non-empty text too.
-        return text, number, cell.column_letter, text, "; ".join(tried)
-
-    return "", None, "", "", "; ".join(tried)
-
-
-def make_record_from_row(
-    ws,
-    row,
-    categoria,
-    codigo_col,
-    tipo_col,
-    resultado_col,
-    metodo,
-    version,
-    fecha,
-    date_source,
-    source_file,
-    raw_tipo,
-    raw_resultado,
-    header_row,
-    start_row,
-    duplicated_from_source_row=None,
-):
-    codigo = normalize_code(ws[f"{codigo_col}{row}"].value)
-
-    if tipo_col:
-        tipo = normalize_tipo(ws[f"{tipo_col}{row}"].value)
-    else:
-        tipo = ""
-
-    if tipo == "" and categoria == "D_BELOW":
-        tipo = "D_BELOW"
-
-    resultado_text, resultado_num = extract_result_value(
-        ws[f"{resultado_col}{row}"].value
-    )
-
-    if codigo == "":
-        return None, "empty codigo"
-
-    if resultado_text == "":
-        return None, f"empty resultado at {resultado_col}{row}"
-
-    record = {
-        "codigo_muestra": codigo,
-        "tipo": tipo,
-        "categoria": categoria,
-        "resultado": resultado_text,
-        "resultado_num": resultado_num,
-
-        "metodo": metodo,
-        "version": version,
-        "fecha": fecha,
-        "date_source": date_source,
-
-        "source_file": source_file,
-        "source_sheet": ws.title,
-        "source_row": row,
-
-        "header_row": header_row,
-        "start_row": start_row,
-
-        "codigo_col": codigo_col,
-        "tipo_col": tipo_col,
-        "resultado_col": resultado_col,
-
-        "raw_tipo": raw_tipo,
-        "raw_resultado": raw_resultado,
-
-        "duplicated_from_source_row": duplicated_from_source_row,
-    }
-
-    return record, ""
-
-
-# ============================================================
 # DATABASE
 # ============================================================
 
@@ -635,6 +476,97 @@ def insert_record(conn, record):
 
 
 # ============================================================
+# RECORD MAKER
+# ============================================================
+
+def make_record_from_row(
+    ws,
+    row,
+    categoria,
+    codigo_col,
+    tipo_col,
+    resultado_col,
+    metodo,
+    version,
+    fecha,
+    date_source,
+    source_file,
+    header_row,
+    start_row,
+    duplicated_from_source_row=None,
+):
+    raw_codigo = ws[f"{codigo_col}{row}"].value
+    raw_tipo = ws[f"{tipo_col}{row}"].value
+    raw_resultado = ws[f"{resultado_col}{row}"].value
+
+    codigo = normalize_code(raw_codigo)
+    tipo = normalize_tipo(raw_tipo)
+    resultado_text, resultado_num = extract_result_value(raw_resultado)
+
+    if tipo == "" and categoria == "D_BELOW":
+        tipo = "D_BELOW"
+
+    if codigo == "":
+        return None, "empty codigo"
+
+    if resultado_text == "":
+        return None, f"empty resultado at {resultado_col}{row}"
+
+    record = {
+        "codigo_muestra": codigo,
+        "tipo": tipo,
+        "categoria": categoria,
+        "resultado": resultado_text,
+        "resultado_num": resultado_num,
+
+        "metodo": metodo,
+        "version": version,
+        "fecha": fecha,
+        "date_source": date_source,
+
+        "source_file": source_file,
+        "source_sheet": ws.title,
+        "source_row": row,
+
+        "header_row": header_row,
+        "start_row": start_row,
+
+        "codigo_col": codigo_col,
+        "tipo_col": tipo_col,
+        "resultado_col": resultado_col,
+
+        "raw_tipo": normalize_text(raw_tipo),
+        "raw_resultado": normalize_text(raw_resultado),
+
+        "duplicated_from_source_row": duplicated_from_source_row,
+    }
+
+    return record, ""
+
+
+# ============================================================
+# DEBUG HELPER
+# ============================================================
+
+def print_debug_rows(ws, start_row, codigo_col, tipo_col, resultado_col, n_rows=25):
+    print("")
+    print("DEBUG FIRST ROWS READ")
+    print("------------------------------------------------------------")
+
+    end_row = min(ws.max_row, start_row + n_rows - 1)
+
+    for row in range(start_row, end_row + 1):
+        print(
+            f"DEBUG row={row} "
+            f"{codigo_col}={ws[f'{codigo_col}{row}'].value!r} "
+            f"{tipo_col}={ws[f'{tipo_col}{row}'].value!r} "
+            f"{resultado_col}={ws[f'{resultado_col}{row}'].value!r}"
+        )
+
+    print("------------------------------------------------------------")
+
+
+# ============================================================
 # EXTRACTION
 # ============================================================
 
@@ -643,6 +575,7 @@ def extract_records_from_workbook(
     input_dir,
     sheet_name="P_DIS",
     verbose=True,
+    debug_rows=False,
 ):
     excel_file = Path(excel_file)
     input_dir = Path(input_dir)
@@ -651,25 +584,29 @@ def extract_records_from_workbook(
     metodo = detect_method(excel_file)
     settings = settings_for_version(version)
 
-    header_row, start_row = table_rows_for_version(version)
-
     password = settings["password"]
     date_cells = settings["date_cells"]
+    header_row = settings["header_row"]
+    start_row = settings["start_row"]
+    codigo_col = settings["codigo_col"]
+    tipo_col = settings["tipo_col"]
+    resultado_col = settings["resultado_col"]
 
     print("")
     print("============================================================")
     print("EXTRACTING FILE")
     print("============================================================")
-    print(f"File:                 {excel_file}")
-    print(f"Version:              {version}")
-    print(f"Method:               {metodo}")
-    print(f"Sheet:                {sheet_name}")
-    print(f"Header row:           {header_row}")
-    print(f"Data starts row:      {start_row}")
-    print(f"Tipo search:          whole row")
-    print(f"Resultado search:     whole row after tipo")
-    print(f"Date cells:           {date_cells}")
-    print(f"Password:             {password!r}")
+    print(f"File:           {excel_file}")
+    print(f"Version:        {version}")
+    print(f"Method:         {metodo}")
+    print(f"Sheet:          {sheet_name}")
+    print(f"Header row:     {header_row}")
+    print(f"Data starts:    {start_row}")
+    print(f"Codigo column:  {codigo_col}")
+    print(f"Tipo column:    {tipo_col}")
+    print(f"Result column:  {resultado_col}")
+    print(f"Date cells:     {date_cells}")
+    print(f"Password:       {password!r}")
 
     wb = open_workbook_for_reading(
         excel_file=excel_file,
@@ -691,11 +628,21 @@ def extract_records_from_workbook(
     except Exception:
         source_file = str(excel_file)
 
-    print(f"Date found:           {fecha}")
-    print(f"Date source:          {date_source}")
-    print(f"Using sheet:          {ws.title}")
-    print(f"Max row:              {ws.max_row}")
-    print(f"Max column:           {ws.max_column}")
+    print(f"Date found:     {fecha}")
+    print(f"Date source:    {date_source}")
+    print(f"Using sheet:    {ws.title}")
+    print(f"Max row:        {ws.max_row}")
+    print(f"Max column:     {ws.max_column}")
+
+    if debug_rows:
+        print_debug_rows(
+            ws=ws,
+            start_row=start_row,
+            codigo_col=codigo_col,
+            tipo_col=tipo_col,
+            resultado_col=resultado_col,
+            n_rows=30,
+        )
 
     records = []
 
@@ -705,27 +652,22 @@ def extract_records_from_workbook(
     skipped = 0
 
     for row in range(start_row, ws.max_row + 1):
-        categoria_found, tipo, tipo_col, raw_tipo = find_tipo_in_row(
-            ws=ws,
-            row=row,
-        )
+        raw_tipo = ws[f"{tipo_col}{row}"].value
+        tipo = normalize_tipo(raw_tipo)
+        categoria_found = is_mri_or_d(tipo)
 
         if categoria_found not in ("MRI", "D"):
             continue
 
-        resultado_text, resultado_num, resultado_col, raw_resultado, tried_resultados = find_resultado_in_row(
-            ws=ws,
-            row=row,
-            tipo_col=tipo_col,
-        )
+        raw_resultado = ws[f"{resultado_col}{row}"].value
+        resultado_text, resultado_num = extract_result_value(raw_resultado)
 
         if resultado_text == "":
             skipped += 1
             if verbose:
                 print(
                     f"  SKIP {categoria_found}: row={row} "
-                    f"tipo_col={tipo_col} tipo={tipo} "
-                    f"no result. Tried: {tried_resultados}"
+                    f"tipo={tipo!r} empty result at {resultado_col}{row}"
                 )
             continue
 
@@ -733,7 +675,7 @@ def extract_records_from_workbook(
             ws=ws,
             row=row,
             categoria=categoria_found,
-            codigo_col="C",
+            codigo_col=codigo_col,
             tipo_col=tipo_col,
             resultado_col=resultado_col,
             metodo=metodo,
@@ -741,8 +683,6 @@ def extract_records_from_workbook(
             fecha=fecha,
             date_source=date_source,
             source_file=source_file,
-            raw_tipo=raw_tipo,
-            raw_resultado=raw_resultado,
             header_row=header_row,
             start_row=start_row,
             duplicated_from_source_row=None,
@@ -765,40 +705,34 @@ def extract_records_from_workbook(
             print(
                 f"  FOUND {categoria_found}: row={row} "
                 f"codigo={record['codigo_muestra']} "
-                f"tipo_col={tipo_col} tipo={tipo} "
-                f"resultado_col={resultado_col} "
+                f"tipo={tipo} "
                 f"resultado={resultado_text} "
                 f"resultado_num={resultado_num}"
             )
 
-        # D_BELOW
+        # Extract row immediately below D
         if categoria_found == "D":
             below_row = row + 1
 
             if below_row <= ws.max_row:
-                below_raw_resultado_value = ws[f"{resultado_col}{below_row}"].value
+                below_raw_resultado = ws[f"{resultado_col}{below_row}"].value
                 below_resultado_text, below_resultado_num = extract_result_value(
-                    below_raw_resultado_value
+                    below_raw_resultado
                 )
-                below_raw_resultado = normalize_text(below_raw_resultado_value)
-
-                below_raw_tipo_value = ws[f"{tipo_col}{below_row}"].value
-                below_raw_tipo = normalize_text(below_raw_tipo_value)
 
                 if below_resultado_text == "":
                     skipped += 1
                     if verbose:
                         print(
                             f"  SKIP D_BELOW: row={below_row} "
-                            f"using resultado_col={resultado_col}, "
-                            f"raw={below_raw_resultado!r}"
+                            f"empty result at {resultado_col}{below_row}"
                         )
                 else:
                     below_record, below_reason = make_record_from_row(
                         ws=ws,
                         row=below_row,
                         categoria="D_BELOW",
-                        codigo_col="C",
+                        codigo_col=codigo_col,
                         tipo_col=tipo_col,
                         resultado_col=resultado_col,
                         metodo=metodo,
@@ -806,8 +740,6 @@ def extract_records_from_workbook(
                         fecha=fecha,
                         date_source=date_source,
                         source_file=source_file,
-                        raw_tipo=below_raw_tipo,
-                        raw_resultado=below_raw_resultado,
                         header_row=header_row,
                         start_row=start_row,
                         duplicated_from_source_row=row,
@@ -825,9 +757,8 @@ def extract_records_from_workbook(
                             print(
                                 f"  FOUND D_BELOW: row={below_row} "
                                 f"codigo={below_record['codigo_muestra']} "
-                                f"resultado_col={resultado_col} "
-                                f"resultado={below_resultado_text} "
-                                f"resultado_num={below_resultado_num} "
+                                f"resultado={below_record['resultado']} "
+                                f"resultado_num={below_record['resultado_num']} "
                                 f"duplicated_from_row={row}"
                             )
 
@@ -962,6 +893,7 @@ def build_colorimetric_database(
     min_number=None,
     max_number=None,
     verbose=True,
+    debug_rows=False,
 ):
     input_dir = Path(input_dir)
     sqlite_path = Path(sqlite_path)
@@ -976,12 +908,9 @@ def build_colorimetric_database(
     print("")
     print("Rules:")
     print("  Only files with SU in filename are processed")
-    print("  Ver.02: header row 29, data starts 30")
-    print("  Ver.04: header row 30, data starts 31")
-    print("  Ver.05: header row 30, data starts 31")
-    print("  codigo_muestra always from C")
-    print("  tipo searched across the whole row")
-    print("  resultado searched across the whole row after tipo")
+    print("  Ver.02: data starts row 30, codigo=C, tipo=E, resultado=P")
+    print("  Ver.04: data starts row 31, codigo=C, tipo=F, resultado=Q")
+    print("  Ver.05: data starts row 31, codigo=C, tipo=F, resultado=Q")
     print("  resultado stored as text")
     print("  resultado_num stored only if numeric conversion works")
     print("  Ver.02 uses password 12")
@@ -1017,6 +946,7 @@ def build_colorimetric_database(
                 input_dir=input_dir,
                 sheet_name=sheet_name,
                 verbose=verbose,
+                debug_rows=debug_rows,
             )
 
             for record in records:
@@ -1105,6 +1035,12 @@ def parse_args():
         help="Reduce row-level logging."
     )
 
+    parser.add_argument(
+        "--debug-rows",
+        action="store_true",
+        help="Print first rows actually read for each file."
+    )
+
     return parser.parse_args()
 
 
@@ -1119,6 +1055,7 @@ def main():
         min_number=args.min_number,
         max_number=args.max_number,
         verbose=not args.quiet,
+        debug_rows=args.debug_rows,
     )
 
 
