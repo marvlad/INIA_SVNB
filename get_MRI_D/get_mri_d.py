@@ -84,17 +84,17 @@ def detect_method(path):
 
 def settings_for_version(version):
     """
-    Extraction rules.
-
     Ver.02:
       tipo in E
       resultado in P
       date in U4
+      password = 12
 
     Ver.04 / Ver.05:
       tipo in F
       resultado in Q
       date in V4
+      no password
     """
     if version == "Ver.02":
         return {
@@ -127,7 +127,7 @@ def extract_date_from_filename(path):
       07-05-26
       31-03-26
 
-    Returns ISO-like yyyy-mm-dd if possible.
+    Returns yyyy-mm-dd if possible.
     """
     name = Path(path).name
 
@@ -161,8 +161,14 @@ def normalize_date(value, fallback=""):
     if text == "":
         return fallback
 
-    # Excel sometimes gives dates as m/d/yy strings
-    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%d/%m/%y", "%d/%m/%Y", "%d-%m-%y", "%d-%m-%Y"):
+    for fmt in (
+        "%m/%d/%y",
+        "%m/%d/%Y",
+        "%d/%m/%y",
+        "%d/%m/%Y",
+        "%d-%m-%y",
+        "%d-%m-%Y",
+    ):
         try:
             return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
         except Exception:
@@ -193,13 +199,8 @@ def decrypt_excel_with_password(excel_file, password):
     return decrypted
 
 
-def open_workbook_for_reading(excel_file, version, password=None, verbose=True):
-    """
-    For Ver.02, first try direct open. If that fails, try password 12.
-    For Ver.04/Ver.05, direct open should work.
-    """
+def open_workbook_for_reading(excel_file, password=None, verbose=True):
     excel_file = Path(excel_file)
-
     keep_vba = excel_file.suffix.lower() == ".xlsm"
 
     try:
@@ -254,7 +255,6 @@ def get_sheet(wb, preferred_sheet="P_DIS"):
     if preferred_sheet in wb.sheetnames:
         return wb[preferred_sheet]
 
-    # fallback: use first visible sheet
     return wb[wb.sheetnames[0]]
 
 
@@ -278,6 +278,7 @@ def create_database(sqlite_path):
 
             codigo_muestra TEXT,
             tipo TEXT,
+            categoria TEXT,
             resultado REAL,
 
             metodo TEXT,
@@ -288,15 +289,19 @@ def create_database(sqlite_path):
             source_sheet TEXT,
             source_row INTEGER,
             tipo_col TEXT,
-            resultado_col TEXT
+            resultado_col TEXT,
+
+            duplicated_from_source_row INTEGER
         )
         """
     )
 
     cur.execute("CREATE INDEX idx_color_code ON colorimetric_results (codigo_muestra)")
     cur.execute("CREATE INDEX idx_color_tipo ON colorimetric_results (tipo)")
+    cur.execute("CREATE INDEX idx_color_categoria ON colorimetric_results (categoria)")
     cur.execute("CREATE INDEX idx_color_metodo ON colorimetric_results (metodo)")
     cur.execute("CREATE INDEX idx_color_version ON colorimetric_results (version)")
+    cur.execute("CREATE INDEX idx_color_fecha ON colorimetric_results (fecha)")
 
     conn.commit()
     return conn
@@ -310,6 +315,7 @@ def insert_record(conn, record):
         INSERT INTO colorimetric_results (
             codigo_muestra,
             tipo,
+            categoria,
             resultado,
 
             metodo,
@@ -320,13 +326,16 @@ def insert_record(conn, record):
             source_sheet,
             source_row,
             tipo_col,
-            resultado_col
+            resultado_col,
+
+            duplicated_from_source_row
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["codigo_muestra"],
             record["tipo"],
+            record["categoria"],
             record["resultado"],
 
             record["metodo"],
@@ -338,21 +347,68 @@ def insert_record(conn, record):
             record["source_row"],
             record["tipo_col"],
             record["resultado_col"],
+
+            record["duplicated_from_source_row"],
         ),
     )
 
 
 # ============================================================
-# EXTRACTION
+# RECORD MAKER
 # ============================================================
 
-def should_extract_tipo(tipo):
-    """
-    Extract only MRI and D.
-    """
-    tipo_norm = normalize_text(tipo).upper()
-    return tipo_norm in ("MRI", "D")
+def make_record_from_row(
+    ws,
+    row,
+    categoria,
+    codigo_col,
+    tipo_col,
+    resultado_col,
+    metodo,
+    version,
+    fecha,
+    source_file,
+    duplicated_from_source_row=None,
+):
+    codigo = normalize_code(ws[f"{codigo_col}{row}"].value)
+    tipo = normalize_text(ws[f"{tipo_col}{row}"].value).upper()
+    raw_resultado = ws[f"{resultado_col}{row}"].value
+    resultado = parse_number(raw_resultado)
 
+    if codigo == "":
+        return None, "empty codigo"
+
+    if tipo == "":
+        return None, "empty tipo"
+
+    if resultado is None:
+        return None, f"invalid resultado: {raw_resultado!r}"
+
+    record = {
+        "codigo_muestra": codigo,
+        "tipo": tipo,
+        "categoria": categoria,
+        "resultado": resultado,
+
+        "metodo": metodo,
+        "version": version,
+        "fecha": fecha,
+
+        "source_file": source_file,
+        "source_sheet": ws.title,
+        "source_row": row,
+        "tipo_col": tipo_col,
+        "resultado_col": resultado_col,
+
+        "duplicated_from_source_row": duplicated_from_source_row,
+    }
+
+    return record, ""
+
+
+# ============================================================
+# EXTRACTION
+# ============================================================
 
 def extract_records_from_workbook(
     excel_file,
@@ -389,7 +445,6 @@ def extract_records_from_workbook(
 
     wb = open_workbook_for_reading(
         excel_file=excel_file,
-        version=version,
         password=password,
         verbose=verbose,
     )
@@ -408,61 +463,122 @@ def extract_records_from_workbook(
     except Exception:
         source_file = str(excel_file)
 
-    extracted = 0
-    skipped_result = 0
+    extracted_mri = 0
+    extracted_d = 0
+    extracted_d_below = 0
+    skipped = 0
 
     for row in range(1, ws.max_row + 1):
-        codigo = normalize_code(ws[f"C{row}"].value)
         tipo = normalize_text(ws[f"{tipo_col}{row}"].value).upper()
 
-        if not should_extract_tipo(tipo):
-            continue
-
-        raw_resultado = ws[f"{resultado_col}{row}"].value
-        resultado = parse_number(raw_resultado)
-
-        if resultado is None:
-            skipped_result += 1
-            if verbose:
-                print(
-                    f"  SKIP RESULT: row={row} "
-                    f"C={codigo} tipo={tipo} "
-                    f"{resultado_col}{row}={raw_resultado!r}"
-                )
-            continue
-
-        record = {
-            "codigo_muestra": codigo,
-            "tipo": tipo,
-            "resultado": resultado,
-
-            "metodo": metodo,
-            "version": version,
-            "fecha": fecha,
-
-            "source_file": source_file,
-            "source_sheet": ws.title,
-            "source_row": row,
-            "tipo_col": tipo_col,
-            "resultado_col": resultado_col,
-        }
-
-        records.append(record)
-        extracted += 1
-
-        if verbose:
-            print(
-                f"  FOUND: row={row} "
-                f"codigo={codigo} tipo={tipo} "
-                f"resultado={resultado} metodo={metodo} fecha={fecha}"
+        if tipo == "MRI":
+            record, reason = make_record_from_row(
+                ws=ws,
+                row=row,
+                categoria="MRI",
+                codigo_col="C",
+                tipo_col=tipo_col,
+                resultado_col=resultado_col,
+                metodo=metodo,
+                version=version,
+                fecha=fecha,
+                source_file=source_file,
+                duplicated_from_source_row=None,
             )
+
+            if record is None:
+                skipped += 1
+                if verbose:
+                    print(f"  SKIP MRI row={row}: {reason}")
+            else:
+                records.append(record)
+                extracted_mri += 1
+                if verbose:
+                    print(
+                        f"  FOUND MRI: row={row} "
+                        f"codigo={record['codigo_muestra']} "
+                        f"resultado={record['resultado']}"
+                    )
+
+        elif tipo == "D":
+            record, reason = make_record_from_row(
+                ws=ws,
+                row=row,
+                categoria="D",
+                codigo_col="C",
+                tipo_col=tipo_col,
+                resultado_col=resultado_col,
+                metodo=metodo,
+                version=version,
+                fecha=fecha,
+                source_file=source_file,
+                duplicated_from_source_row=None,
+            )
+
+            if record is None:
+                skipped += 1
+                if verbose:
+                    print(f"  SKIP D row={row}: {reason}")
+            else:
+                records.append(record)
+                extracted_d += 1
+                if verbose:
+                    print(
+                        f"  FOUND D: row={row} "
+                        f"codigo={record['codigo_muestra']} "
+                        f"resultado={record['resultado']}"
+                    )
+
+            # ----------------------------------------------------
+            # New requirement:
+            # also extract the row immediately below D.
+            # This is the sample duplicated by the D row.
+            # ----------------------------------------------------
+            below_row = row + 1
+
+            if below_row <= ws.max_row:
+                below_record, below_reason = make_record_from_row(
+                    ws=ws,
+                    row=below_row,
+                    categoria="D_BELOW",
+                    codigo_col="C",
+                    tipo_col=tipo_col,
+                    resultado_col=resultado_col,
+                    metodo=metodo,
+                    version=version,
+                    fecha=fecha,
+                    source_file=source_file,
+                    duplicated_from_source_row=row,
+                )
+
+                if below_record is None:
+                    skipped += 1
+                    if verbose:
+                        print(
+                            f"  SKIP D_BELOW row={below_row}, "
+                            f"from D row={row}: {below_reason}"
+                        )
+                else:
+                    records.append(below_record)
+                    extracted_d_below += 1
+                    if verbose:
+                        print(
+                            f"  FOUND D_BELOW: row={below_row} "
+                            f"codigo={below_record['codigo_muestra']} "
+                            f"tipo={below_record['tipo']} "
+                            f"resultado={below_record['resultado']} "
+                            f"duplicated_from_row={row}"
+                        )
 
     wb.close()
 
     print("")
     print("Finished file:")
-    print(f"  Extracted records:       {extracted}")
-    print(f"  Skipped invalid result:  {skipped_result}")
+    print(f"  Extracted MRI:      {extracted_mri}")
+    print(f"  Extracted D:        {extracted_d}")
+    print(f"  Extracted D_BELOW:  {extracted_d_below}")
+    print(f"  Skipped:            {skipped}")
+    print(f"  Total records:      {len(records)}")
 
     return records
 
@@ -531,6 +647,7 @@ def export_csv(records, csv_path):
     fieldnames = [
         "codigo_muestra",
         "tipo",
+        "categoria",
         "resultado",
         "metodo",
         "version",
@@ -540,6 +657,7 @@ def export_csv(records, csv_path):
         "source_row",
         "tipo_col",
         "resultado_col",
+        "duplicated_from_source_row",
     ]
 
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -568,7 +686,7 @@ def build_colorimetric_database(
 
     print("")
     print("============================================================")
-    print("BUILD COLORIMETRIC MRI/D DATABASE")
+    print("BUILD COLORIMETRIC MRI/D/D_BELOW DATABASE")
     print("============================================================")
     print(f"Input dir:  {input_dir}")
     print(f"SQLite DB:  {sqlite_path}")
@@ -578,7 +696,9 @@ def build_colorimetric_database(
     print("  Ver.02: tipo=E, resultado=P, fecha=U4, password=12")
     print("  Ver.04: tipo=F, resultado=Q, fecha=V4")
     print("  Ver.05: tipo=F, resultado=Q, fecha=V4")
-    print("  Extract rows where tipo is MRI or D")
+    print("  Extract rows where tipo is MRI")
+    print("  Extract rows where tipo is D")
+    print("  Also extract the row immediately below every D as D_BELOW")
     print("  Method comes from filename: OLSEN or BRAY Y KURTZ")
     print("============================================================")
 
@@ -652,7 +772,7 @@ def build_colorimetric_database(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Extract MRI and D rows from F-82 colorimetric Excel files into SQLite."
+        description="Extract MRI, D, and D_BELOW rows from F-82 colorimetric Excel files into SQLite."
     )
 
     parser.add_argument(
