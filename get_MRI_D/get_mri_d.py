@@ -4,10 +4,10 @@ import io
 import csv
 import sqlite3
 import argparse
-import unicodedata
 from datetime import datetime
 
 from openpyxl import load_workbook
+
 
 try:
     import msoffcrypto
@@ -28,14 +28,6 @@ def normalize_text(value):
     text = re.sub(r"\s+", " ", text)
     text = text.lstrip("'").strip()
 
-    return text
-
-
-def normalize_for_match(value):
-    text = normalize_text(value).upper()
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"\s+", " ", text)
     return text
 
 
@@ -64,8 +56,29 @@ def parse_number(value):
         return None
 
 
+def is_mri_or_d(tipo):
+    """
+    Accept:
+      MRI
+      D
+      D1
+      D21
+      D41
+      etc.
+    """
+    tipo = normalize_tipo(tipo)
+
+    if tipo == "MRI":
+        return "MRI"
+
+    if tipo == "D" or tipo.startswith("D"):
+        return "D"
+
+    return None
+
+
 # ============================================================
-# FILE / VERSION / METHOD
+# FILE / VERSION RULES
 # ============================================================
 
 def detect_version(path):
@@ -97,8 +110,26 @@ def detect_method(path):
 
 def settings_for_version(version):
     """
-    These are only fallback rules.
-    The script first tries to detect columns from the actual header row.
+    Final fixed rules.
+
+    Ver.02:
+      codigo = C
+      tipo = E
+      resultado = P
+      fecha = E10
+      password = 12
+
+    Ver.04:
+      codigo = C
+      tipo = F
+      resultado = Q
+      fecha = T12
+
+    Ver.05:
+      codigo = C
+      tipo = F
+      resultado = Q
+      fecha = T12
     """
     if version == "Ver.02":
         return {
@@ -141,6 +172,14 @@ def settings_for_version(version):
 # ============================================================
 
 def extract_date_from_filename(path):
+    """
+    Extract date from filename if date cell is empty.
+
+    Examples:
+      13-05-26 -> 2026-05-13
+      07-05-26 -> 2026-05-07
+      31-03-26 -> 2026-03-31
+    """
     name = Path(path).name
 
     match = re.search(r"(\d{1,2})-(\d{1,2})-(\d{2,4})", name)
@@ -268,97 +307,6 @@ def get_sheet(wb, preferred_sheet="P_DIS"):
 
 
 # ============================================================
-# HEADER DETECTION
-# ============================================================
-
-def col_letter_from_index(index):
-    """
-    1 -> A, 2 -> B, ...
-    """
-    letters = ""
-
-    while index:
-        index, remainder = divmod(index - 1, 26)
-        letters = chr(65 + remainder) + letters
-
-    return letters
-
-
-def detect_table_columns(ws, version, verbose=True):
-    """
-    Detect the actual columns from the header row.
-
-    Looks for:
-      Codigo de Muestra
-      Tipo
-      Resultado (mg/Kg)
-
-    This avoids errors when Ver.02/Ver.04/Ver.05 shift columns after pH is added.
-    """
-
-    fallback = settings_for_version(version)
-
-    best = None
-
-    max_scan_row = min(ws.max_row, 120)
-    max_scan_col = min(ws.max_column, 40)
-
-    for row in range(1, max_scan_row + 1):
-        codigo_col = None
-        tipo_col = None
-        resultado_col = None
-
-        for col in range(1, max_scan_col + 1):
-            value = ws.cell(row=row, column=col).value
-            text = normalize_for_match(value)
-
-            if text == "":
-                continue
-
-            # Código de Muestra
-            if "CODIGO" in text and "MUESTRA" in text:
-                codigo_col = col_letter_from_index(col)
-
-            # Tipo
-            if text == "TIPO":
-                tipo_col = col_letter_from_index(col)
-
-            # Resultado (mg/Kg), but avoid Resultado de pH
-            if "RESULTADO" in text and ("MG/KG" in text or "MG / KG" in text):
-                resultado_col = col_letter_from_index(col)
-
-        if codigo_col and tipo_col and resultado_col:
-            best = {
-                "header_row": row,
-                "codigo_col": codigo_col,
-                "tipo_col": tipo_col,
-                "resultado_col": resultado_col,
-                "detected": True,
-            }
-            break
-
-    if best is None:
-        best = {
-            "header_row": None,
-            "codigo_col": fallback["codigo_col"],
-            "tipo_col": fallback["tipo_col"],
-            "resultado_col": fallback["resultado_col"],
-            "detected": False,
-        }
-
-    if verbose:
-        print("")
-        print("Detected table columns:")
-        print(f"  detected:      {best['detected']}")
-        print(f"  header row:    {best['header_row']}")
-        print(f"  codigo_col:    {best['codigo_col']}")
-        print(f"  tipo_col:      {best['tipo_col']}")
-        print(f"  resultado_col: {best['resultado_col']}")
-
-    return best
-
-
-# ============================================================
 # DATABASE
 # ============================================================
 
@@ -388,9 +336,6 @@ def create_database(sqlite_path):
             source_file TEXT,
             source_sheet TEXT,
             source_row INTEGER,
-
-            header_row INTEGER,
-            columns_detected INTEGER,
 
             codigo_col TEXT,
             tipo_col TEXT,
@@ -435,9 +380,6 @@ def insert_record(conn, record):
             source_sheet,
             source_row,
 
-            header_row,
-            columns_detected,
-
             codigo_col,
             tipo_col,
             resultado_col,
@@ -447,7 +389,7 @@ def insert_record(conn, record):
 
             duplicated_from_source_row
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["codigo_muestra"],
@@ -462,9 +404,6 @@ def insert_record(conn, record):
             record["source_file"],
             record["source_sheet"],
             record["source_row"],
-
-            record["header_row"],
-            record["columns_detected"],
 
             record["codigo_col"],
             record["tipo_col"],
@@ -493,8 +432,6 @@ def make_record_from_row(
     version,
     fecha,
     source_file,
-    header_row,
-    columns_detected,
     duplicated_from_source_row=None,
     require_tipo=True,
 ):
@@ -512,6 +449,7 @@ def make_record_from_row(
     if require_tipo and tipo == "":
         return None, "empty tipo"
 
+    # For D_BELOW, tipo can be blank. Keep it readable.
     if tipo == "":
         tipo = "D_BELOW"
 
@@ -531,9 +469,6 @@ def make_record_from_row(
         "source_file": source_file,
         "source_sheet": ws.title,
         "source_row": row,
-
-        "header_row": header_row,
-        "columns_detected": 1 if columns_detected else 0,
 
         "codigo_col": codigo_col,
         "tipo_col": tipo_col,
@@ -565,6 +500,9 @@ def extract_records_from_workbook(
     metodo = detect_method(excel_file)
     settings = settings_for_version(version)
 
+    codigo_col = settings["codigo_col"]
+    tipo_col = settings["tipo_col"]
+    resultado_col = settings["resultado_col"]
     date_cell = settings["date_cell"]
     password = settings["password"]
 
@@ -574,12 +512,15 @@ def extract_records_from_workbook(
     print("============================================================")
     print("EXTRACTING FILE")
     print("============================================================")
-    print(f"File:      {excel_file}")
-    print(f"Version:   {version}")
-    print(f"Method:    {metodo}")
-    print(f"Sheet:     {sheet_name}")
-    print(f"Date cell: {date_cell}")
-    print(f"Password:  {password!r}")
+    print(f"File:          {excel_file}")
+    print(f"Version:       {version}")
+    print(f"Method:        {metodo}")
+    print(f"Sheet:         {sheet_name}")
+    print(f"Codigo column: {codigo_col}")
+    print(f"Tipo column:   {tipo_col}")
+    print(f"Result column: {resultado_col}")
+    print(f"Date cell:     {date_cell}")
+    print(f"Password:      {password!r}")
 
     wb = open_workbook_for_reading(
         excel_file=excel_file,
@@ -589,24 +530,12 @@ def extract_records_from_workbook(
 
     ws = get_sheet(wb, preferred_sheet=sheet_name)
 
-    column_info = detect_table_columns(
-        ws=ws,
-        version=version,
-        verbose=True,
-    )
-
-    codigo_col = column_info["codigo_col"]
-    tipo_col = column_info["tipo_col"]
-    resultado_col = column_info["resultado_col"]
-    header_row = column_info["header_row"]
-    columns_detected = column_info["detected"]
-
     fallback_date = extract_date_from_filename(excel_file)
     fecha = normalize_date(ws[date_cell].value, fallback=fallback_date)
 
-    print(f"Date found: {fecha}")
-    print(f"Using sheet:{ws.title}")
-    print(f"Max row:    {ws.max_row}")
+    print(f"Date found:    {fecha}")
+    print(f"Using sheet:   {ws.title}")
+    print(f"Max row:       {ws.max_row}")
 
     try:
         source_file = str(excel_file.relative_to(input_dir))
@@ -618,14 +547,12 @@ def extract_records_from_workbook(
     extracted_d_below = 0
     skipped = 0
 
-    start_row = 1
-    if header_row is not None:
-        start_row = header_row + 1
+    for row in range(1, ws.max_row + 1):
+        raw_tipo_value = ws[f"{tipo_col}{row}"].value
+        tipo = normalize_tipo(raw_tipo_value)
+        categoria_found = is_mri_or_d(tipo)
 
-    for row in range(start_row, ws.max_row + 1):
-        tipo = normalize_tipo(ws[f"{tipo_col}{row}"].value)
-
-        if tipo == "MRI":
+        if categoria_found == "MRI":
             record, reason = make_record_from_row(
                 ws=ws,
                 row=row,
@@ -637,8 +564,6 @@ def extract_records_from_workbook(
                 version=version,
                 fecha=fecha,
                 source_file=source_file,
-                header_row=header_row,
-                columns_detected=columns_detected,
                 duplicated_from_source_row=None,
                 require_tipo=True,
             )
@@ -657,7 +582,7 @@ def extract_records_from_workbook(
                         f"resultado={record['resultado']}"
                     )
 
-        elif tipo == "D":
+        elif categoria_found == "D":
             record, reason = make_record_from_row(
                 ws=ws,
                 row=row,
@@ -669,8 +594,6 @@ def extract_records_from_workbook(
                 version=version,
                 fecha=fecha,
                 source_file=source_file,
-                header_row=header_row,
-                columns_detected=columns_detected,
                 duplicated_from_source_row=None,
                 require_tipo=True,
             )
@@ -685,6 +608,7 @@ def extract_records_from_workbook(
                 if verbose:
                     print(
                         f"  FOUND D: row={row} "
+                        f"tipo={tipo} "
                         f"codigo={record['codigo_muestra']} "
                         f"resultado={record['resultado']}"
                     )
@@ -703,8 +627,6 @@ def extract_records_from_workbook(
                     version=version,
                     fecha=fecha,
                     source_file=source_file,
-                    header_row=header_row,
-                    columns_detected=columns_detected,
                     duplicated_from_source_row=row,
                     require_tipo=False,
                 )
@@ -813,8 +735,6 @@ def export_csv(records, csv_path):
         "source_file",
         "source_sheet",
         "source_row",
-        "header_row",
-        "columns_detected",
         "codigo_col",
         "tipo_col",
         "resultado_col",
@@ -856,12 +776,11 @@ def build_colorimetric_database(
     print(f"CSV output: {csv_path}")
     print("")
     print("Rules:")
-    print("  Columns are detected from the header row.")
-    print("  Fallback Ver.02: codigo=C, tipo=E, resultado=P, fecha=E10, password=12")
-    print("  Fallback Ver.04: codigo=C, tipo=F, resultado=Q, fecha=T12")
-    print("  Fallback Ver.05: codigo=C, tipo=F, resultado=Q, fecha=T12")
+    print("  Ver.02: codigo=C, tipo=E, resultado=P, fecha=E10, password=12")
+    print("  Ver.04: codigo=C, tipo=F, resultado=Q, fecha=T12")
+    print("  Ver.05: codigo=C, tipo=F, resultado=Q, fecha=T12")
     print("  Extract MRI")
-    print("  Extract D")
+    print("  Extract D, D1, D21, etc.")
     print("  Extract row immediately below D as D_BELOW")
     print("============================================================")
 
