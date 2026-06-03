@@ -109,6 +109,28 @@ def first_row_for_version(version):
     return 37
 
 
+def block_settings_for_version(version):
+    """
+    V04 has 21 data rows per block:
+      35-55
+      58-78
+      81-101
+
+    V05 has 20 data rows per block:
+      37-56
+      60-79
+      83-102
+    """
+    if version == "V04":
+        return 21, 2
+
+    if version == "V05":
+        return 20, 3
+
+    # fallback for older/unknown files
+    return 20, 3
+
+
 # ============================================================
 # SQLITE LOOKUP
 # ============================================================
@@ -246,16 +268,14 @@ def get_sheet(wb, preferred_sheet):
 def iter_rows_by_blocks(ws, first_row, block_size, gap_rows, code_col, max_empty_blocks=3):
     """
     For V04:
-      35-54
-      58-77
-      81-100
-      ...
+      35-55
+      58-78
+      81-101
 
     For V05:
       37-56
       60-79
       83-102
-      ...
     """
     block_start = first_row
     empty_blocks = 0
@@ -300,8 +320,6 @@ def fill_one_file(
     sheet_name="P_DIS",
     code_col="C",
     output_col="E",
-    block_size=20,
-    gap_rows=3,
     print_found=False,
 ):
     input_file = Path(input_file)
@@ -309,6 +327,7 @@ def fill_one_file(
 
     version = detect_input_version(input_file)
     first_row = first_row_for_version(version)
+    block_size, gap_rows = block_settings_for_version(version)
 
     # IMPORTANT:
     # Inputs are not password protected.
@@ -320,13 +339,15 @@ def fill_one_file(
     print("============================================================")
     print("FILLING FILE")
     print("============================================================")
-    print(f"Input:    {input_file}")
-    print(f"Output:   {output_file}")
-    print(f"Version:  {version}")
-    print(f"Sheet:    {sheet_name}")
-    print(f"Read:     {code_col}{first_row}")
-    print(f"Write:    {output_col}{first_row}")
-    print(f"keep_vba: {keep_vba}")
+    print(f"Input:      {input_file}")
+    print(f"Output:     {output_file}")
+    print(f"Version:    {version}")
+    print(f"Sheet:      {sheet_name}")
+    print(f"Read:       {code_col}{first_row}")
+    print(f"Write:      {output_col}{first_row}")
+    print(f"Block size: {block_size}")
+    print(f"Gap rows:   {gap_rows}")
+    print(f"keep_vba:   {keep_vba}")
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -433,8 +454,6 @@ def fill_folder(
     sheet_name="P_DIS",
     code_col="C",
     output_col="E",
-    block_size=20,
-    gap_rows=3,
     print_found=False,
 ):
     input_dir = Path(input_dir)
@@ -450,8 +469,8 @@ def fill_folder(
     print(f"SQLite DB:   {ph_sqlite}")
     print(f"Only files:  {min_number} to {max_number}")
     print("Rules:")
-    print("  V04 -> read C35, write E35")
-    print("  V05 -> read C37, write E37")
+    print("  V04 -> read C35, write E35, block 21, gap 2")
+    print("  V05 -> read C37, write E37, block 20, gap 3")
     print("  Skip files starting with ~")
     print("  .xlsx -> keep_vba=False")
     print("  .xlsm -> keep_vba=True")
@@ -493,8 +512,6 @@ def fill_folder(
                 sheet_name=sheet_name,
                 code_col=code_col,
                 output_col=output_col,
-                block_size=block_size,
-                gap_rows=gap_rows,
                 print_found=print_found,
             )
 
