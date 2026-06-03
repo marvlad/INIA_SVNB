@@ -63,12 +63,6 @@ def extract_result_value(value):
     Returns:
       resultado_text
       resultado_num
-
-    Examples:
-      5.23    -> ("5.23", 5.23)
-      "5,23"  -> ("5,23", 5.23)
-      "<0.01" -> ("<0.01", None)
-      "ND"    -> ("ND", None)
     """
     text = normalize_text(value)
 
@@ -133,7 +127,7 @@ def detect_method(path):
 
 def settings_for_version(version):
     """
-    Final fixed rules.
+    Fixed rules.
 
     Ver.02:
       data starts row = 30
@@ -405,7 +399,6 @@ def create_database(sqlite_path):
     cur.execute("CREATE INDEX idx_color_source ON colorimetric_results (source_file, source_row)")
 
     conn.commit()
-
     return conn
 
 
@@ -548,19 +541,25 @@ def make_record_from_row(
 # DEBUG HELPER
 # ============================================================
 
-def print_debug_rows(ws, start_row, codigo_col, tipo_col, resultado_col, n_rows=25):
+def print_debug_rows(ws, start_row, n_rows=40):
     print("")
-    print("DEBUG FIRST ROWS READ")
+    print("AVAILABLE SHEETS DEBUG IS PRINTED OUTSIDE THIS FUNCTION")
+    print("")
+    print("DEBUG CELLS AROUND DATA AREA")
     print("------------------------------------------------------------")
 
     end_row = min(ws.max_row, start_row + n_rows - 1)
 
     for row in range(start_row, end_row + 1):
         print(
-            f"DEBUG row={row} "
-            f"{codigo_col}={ws[f'{codigo_col}{row}'].value!r} "
-            f"{tipo_col}={ws[f'{tipo_col}{row}'].value!r} "
-            f"{resultado_col}={ws[f'{resultado_col}{row}'].value!r}"
+            f"row={row} | "
+            f"C={ws[f'C{row}'].value!r} | "
+            f"D={ws[f'D{row}'].value!r} | "
+            f"E={ws[f'E{row}'].value!r} | "
+            f"F={ws[f'F{row}'].value!r} | "
+            f"O={ws[f'O{row}'].value!r} | "
+            f"P={ws[f'P{row}'].value!r} | "
+            f"Q={ws[f'Q{row}'].value!r}"
         )
 
     print("------------------------------------------------------------")
@@ -599,7 +598,7 @@ def extract_records_from_workbook(
     print(f"File:           {excel_file}")
     print(f"Version:        {version}")
     print(f"Method:         {metodo}")
-    print(f"Sheet:          {sheet_name}")
+    print(f"Preferred sheet:{sheet_name}")
     print(f"Header row:     {header_row}")
     print(f"Data starts:    {start_row}")
     print(f"Codigo column:  {codigo_col}")
@@ -613,6 +612,11 @@ def extract_records_from_workbook(
         password=password,
         verbose=verbose,
     )
+
+    print("")
+    print("AVAILABLE SHEETS:")
+    for s in wb.sheetnames:
+        print(f"  - {s}")
 
     ws = get_sheet(wb, preferred_sheet=sheet_name)
 
@@ -638,10 +642,7 @@ def extract_records_from_workbook(
         print_debug_rows(
             ws=ws,
             start_row=start_row,
-            codigo_col=codigo_col,
-            tipo_col=tipo_col,
-            resultado_col=resultado_col,
-            n_rows=30,
+            n_rows=50,
         )
 
     records = []
@@ -710,7 +711,6 @@ def extract_records_from_workbook(
                 f"resultado_num={resultado_num}"
             )
 
-        # Extract row immediately below D
         if categoria_found == "D":
             below_row = row + 1
 
@@ -801,7 +801,6 @@ def get_excel_files(input_dir, min_number=None, max_number=None):
 
         name_upper = path.name.upper()
 
-        # Only process files that have SU in the filename.
         if "SU" not in name_upper:
             print(f"Skipping file without SU in name: {path.name}")
             continue
@@ -1038,7 +1037,7 @@ def parse_args():
     parser.add_argument(
         "--debug-rows",
         action="store_true",
-        help="Print first rows actually read for each file."
+        help="Print cells C,D,E,F,O,P,Q around the data area for debugging."
     )
 
     return parser.parse_args()
