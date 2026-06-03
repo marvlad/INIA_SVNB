@@ -53,40 +53,41 @@ def normalize_month(value):
     return month
 
 
+def build_month_where(month_filter, params):
+    """
+    Build SQL month filter.
+
+    fecha is stored as text, usually yyyy-mm-dd.
+    """
+    if isinstance(month_filter, int):
+        params.append(month_filter)
+        return "CAST(strftime('%m', fecha) AS INTEGER) = ?"
+
+    params.append(month_filter)
+    return "substr(fecha, 1, 7) = ?"
+
+
 # ============================================================
-# QUERY DATABASE
+# QUERY MRI
 # ============================================================
 
-def query_colorimetric_db(
+def query_mri(
     sqlite_path,
-    tipo,
     month,
     metodo=None,
     version=None,
     show_source=False,
 ):
-    sqlite_path = Path(sqlite_path)
-
-    if not sqlite_path.exists():
-        raise FileNotFoundError(f"SQLite database not found: {sqlite_path}")
-
-    tipo = normalize_tipo(tipo)
     month_filter = normalize_month(month)
 
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    where = ["tipo = ?"]
-    params = [tipo]
+    where = ["categoria = 'MRI'"]
+    params = []
 
-    # Month filter
-    if isinstance(month_filter, int):
-        where.append("CAST(strftime('%m', fecha) AS INTEGER) = ?")
-        params.append(month_filter)
-    else:
-        where.append("substr(fecha, 1, 7) = ?")
-        params.append(month_filter)
+    where.append(build_month_where(month_filter, params))
 
     if metodo is not None:
         where.append("metodo = ?")
@@ -96,21 +97,18 @@ def query_colorimetric_db(
         where.append("version = ?")
         params.append(version)
 
-    source_cols = """
-        source_file,
-        source_sheet,
-        source_row
-    """
-
     query = f"""
         SELECT
             codigo_muestra,
             resultado,
             tipo,
+            categoria,
             metodo,
             version,
             fecha,
-            {source_cols}
+            source_file,
+            source_sheet,
+            source_row
         FROM colorimetric_results
         WHERE {" AND ".join(where)}
         ORDER BY fecha, metodo, codigo_muestra
@@ -118,15 +116,13 @@ def query_colorimetric_db(
 
     cur.execute(query, params)
     rows = cur.fetchall()
-
     conn.close()
 
     print("")
     print("============================================================")
-    print("COLORIMETRIC QUERY")
+    print("COLORIMETRIC QUERY: MRI")
     print("============================================================")
     print(f"SQLite: {sqlite_path}")
-    print(f"Tipo:   {tipo}")
     print(f"Month:  {month}")
     if metodo:
         print(f"Method: {metodo}")
@@ -158,12 +154,189 @@ def query_colorimetric_db(
 
 
 # ============================================================
+# QUERY D + D_BELOW
+# ============================================================
+
+def query_d_with_below(
+    sqlite_path,
+    month,
+    metodo=None,
+    version=None,
+    show_source=False,
+):
+    """
+    For each D row, find the corresponding D_BELOW row using:
+
+        D_BELOW.duplicated_from_source_row = D.source_row
+        same source_file
+        same metodo
+        same version
+        same fecha
+
+    Then print:
+        codigo_muestra_D
+        resultado_D
+        codigo_muestra_D_BELOW
+        resultado_D_BELOW
+        difference = D - D_BELOW
+    """
+    month_filter = normalize_month(month)
+
+    conn = sqlite3.connect(sqlite_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    where = ["d.categoria = 'D'"]
+    params = []
+
+    if isinstance(month_filter, int):
+        where.append("CAST(strftime('%m', d.fecha) AS INTEGER) = ?")
+        params.append(month_filter)
+    else:
+        where.append("substr(d.fecha, 1, 7) = ?")
+        params.append(month_filter)
+
+    if metodo is not None:
+        where.append("d.metodo = ?")
+        params.append(metodo)
+
+    if version is not None:
+        where.append("d.version = ?")
+        params.append(version)
+
+    query = f"""
+        SELECT
+            d.codigo_muestra AS d_codigo_muestra,
+            d.resultado AS d_resultado,
+            d.tipo AS d_tipo,
+            d.fecha AS fecha,
+            d.metodo AS metodo,
+            d.version AS version,
+            d.source_file AS source_file,
+            d.source_sheet AS source_sheet,
+            d.source_row AS d_source_row,
+
+            b.codigo_muestra AS below_codigo_muestra,
+            b.resultado AS below_resultado,
+            b.tipo AS below_tipo,
+            b.source_row AS below_source_row,
+
+            (d.resultado - b.resultado) AS difference
+        FROM colorimetric_results d
+        LEFT JOIN colorimetric_results b
+          ON b.categoria = 'D_BELOW'
+         AND b.source_file = d.source_file
+         AND b.metodo = d.metodo
+         AND b.version = d.version
+         AND b.fecha = d.fecha
+         AND b.duplicated_from_source_row = d.source_row
+        WHERE {" AND ".join(where)}
+        ORDER BY d.fecha, d.metodo, d.source_file, d.source_row
+    """
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    print("")
+    print("============================================================")
+    print("COLORIMETRIC QUERY: D + D_BELOW")
+    print("============================================================")
+    print(f"SQLite: {sqlite_path}")
+    print(f"Month:  {month}")
+    if metodo:
+        print(f"Method: {metodo}")
+    if version:
+        print(f"Version:{version}")
+    print(f"Rows:   {len(rows)}")
+    print("Difference:")
+    print("  difference = D_resultado - D_BELOW_resultado")
+    print("============================================================")
+    print("")
+
+    if show_source:
+        print(
+            "D_codigo\tD_resultado\t"
+            "D_BELOW_codigo\tD_BELOW_resultado\t"
+            "difference\tfecha\tmetodo\tversion\t"
+            "source_file\tD_row\tD_BELOW_row"
+        )
+
+        for row in rows:
+            print(
+                f"{row['d_codigo_muestra']}\t"
+                f"{row['d_resultado']}\t"
+                f"{row['below_codigo_muestra'] or ''}\t"
+                f"{row['below_resultado'] if row['below_resultado'] is not None else ''}\t"
+                f"{row['difference'] if row['difference'] is not None else ''}\t"
+                f"{row['fecha']}\t"
+                f"{row['metodo']}\t"
+                f"{row['version']}\t"
+                f"{row['source_file']}\t"
+                f"{row['d_source_row']}\t"
+                f"{row['below_source_row'] if row['below_source_row'] is not None else ''}"
+            )
+
+    else:
+        print("D_codigo\tD_resultado\tD_BELOW_codigo\tD_BELOW_resultado\tdifference")
+
+        for row in rows:
+            print(
+                f"{row['d_codigo_muestra']}\t"
+                f"{row['d_resultado']}\t"
+                f"{row['below_codigo_muestra'] or ''}\t"
+                f"{row['below_resultado'] if row['below_resultado'] is not None else ''}\t"
+                f"{row['difference'] if row['difference'] is not None else ''}"
+            )
+
+    return rows
+
+
+# ============================================================
+# MAIN QUERY
+# ============================================================
+
+def query_colorimetric_db(
+    sqlite_path,
+    tipo,
+    month,
+    metodo=None,
+    version=None,
+    show_source=False,
+):
+    sqlite_path = Path(sqlite_path)
+
+    if not sqlite_path.exists():
+        raise FileNotFoundError(f"SQLite database not found: {sqlite_path}")
+
+    tipo = normalize_tipo(tipo)
+
+    if tipo == "MRI":
+        return query_mri(
+            sqlite_path=sqlite_path,
+            month=month,
+            metodo=metodo,
+            version=version,
+            show_source=show_source,
+        )
+
+    if tipo == "D":
+        return query_d_with_below(
+            sqlite_path=sqlite_path,
+            month=month,
+            metodo=metodo,
+            version=version,
+            show_source=show_source,
+        )
+
+
+# ============================================================
 # ARGUMENTS
 # ============================================================
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Query MRI or D colorimetric results by month."
+        description="Query MRI or D colorimetric results by month. For D, also shows D_BELOW and difference."
     )
 
     parser.add_argument(
@@ -176,7 +349,7 @@ def parse_args():
         "--tipo",
         required=True,
         choices=["MRI", "D", "mri", "d"],
-        help="Type to print: MRI or D."
+        help="Type to print: MRI or D. If D, also prints D_BELOW and difference."
     )
 
     parser.add_argument(
