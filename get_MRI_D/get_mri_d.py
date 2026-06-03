@@ -4,9 +4,10 @@ import io
 import csv
 import sqlite3
 import argparse
+import unicodedata
 from datetime import datetime
-from openpyxl import load_workbook
 
+from openpyxl import load_workbook
 
 try:
     import msoffcrypto
@@ -30,7 +31,19 @@ def normalize_text(value):
     return text
 
 
+def normalize_for_match(value):
+    text = normalize_text(value).upper()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
 def normalize_code(value):
+    return normalize_text(value).upper()
+
+
+def normalize_tipo(value):
     return normalize_text(value).upper()
 
 
@@ -52,7 +65,7 @@ def parse_number(value):
 
 
 # ============================================================
-# FILE DETECTION
+# FILE / VERSION / METHOD
 # ============================================================
 
 def detect_version(path):
@@ -84,26 +97,8 @@ def detect_method(path):
 
 def settings_for_version(version):
     """
-    Corrected rules.
-
-    Ver.02:
-      codigo = C
-      tipo = E
-      resultado = P
-      fecha = E10
-      password = 12
-
-    Ver.04:
-      codigo = C
-      tipo = F
-      resultado = Q
-      fecha = T12
-
-    Ver.05:
-      codigo = C
-      tipo = F
-      resultado = Q
-      fecha = T12
+    These are only fallback rules.
+    The script first tries to detect columns from the actual header row.
     """
     if version == "Ver.02":
         return {
@@ -141,15 +136,11 @@ def settings_for_version(version):
     }
 
 
-def extract_date_from_filename(path):
-    """
-    Extract date like:
-      13-05-26
-      07-05-26
-      31-03-26
+# ============================================================
+# DATE HELPERS
+# ============================================================
 
-    Returns yyyy-mm-dd if possible.
-    """
+def extract_date_from_filename(path):
     name = Path(path).name
 
     match = re.search(r"(\d{1,2})-(\d{1,2})-(\d{2,4})", name)
@@ -269,10 +260,6 @@ def open_workbook_for_reading(excel_file, password=None, verbose=True):
     raise RuntimeError(f"Could not open workbook: {excel_file}")
 
 
-# ============================================================
-# SHEET SELECTION
-# ============================================================
-
 def get_sheet(wb, preferred_sheet="P_DIS"):
     if preferred_sheet in wb.sheetnames:
         return wb[preferred_sheet]
@@ -281,7 +268,98 @@ def get_sheet(wb, preferred_sheet="P_DIS"):
 
 
 # ============================================================
-# SQLITE DATABASE
+# HEADER DETECTION
+# ============================================================
+
+def col_letter_from_index(index):
+    """
+    1 -> A, 2 -> B, ...
+    """
+    letters = ""
+
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(65 + remainder) + letters
+
+    return letters
+
+
+def detect_table_columns(ws, version, verbose=True):
+    """
+    Detect the actual columns from the header row.
+
+    Looks for:
+      Codigo de Muestra
+      Tipo
+      Resultado (mg/Kg)
+
+    This avoids errors when Ver.02/Ver.04/Ver.05 shift columns after pH is added.
+    """
+
+    fallback = settings_for_version(version)
+
+    best = None
+
+    max_scan_row = min(ws.max_row, 120)
+    max_scan_col = min(ws.max_column, 40)
+
+    for row in range(1, max_scan_row + 1):
+        codigo_col = None
+        tipo_col = None
+        resultado_col = None
+
+        for col in range(1, max_scan_col + 1):
+            value = ws.cell(row=row, column=col).value
+            text = normalize_for_match(value)
+
+            if text == "":
+                continue
+
+            # Código de Muestra
+            if "CODIGO" in text and "MUESTRA" in text:
+                codigo_col = col_letter_from_index(col)
+
+            # Tipo
+            if text == "TIPO":
+                tipo_col = col_letter_from_index(col)
+
+            # Resultado (mg/Kg), but avoid Resultado de pH
+            if "RESULTADO" in text and ("MG/KG" in text or "MG / KG" in text):
+                resultado_col = col_letter_from_index(col)
+
+        if codigo_col and tipo_col and resultado_col:
+            best = {
+                "header_row": row,
+                "codigo_col": codigo_col,
+                "tipo_col": tipo_col,
+                "resultado_col": resultado_col,
+                "detected": True,
+            }
+            break
+
+    if best is None:
+        best = {
+            "header_row": None,
+            "codigo_col": fallback["codigo_col"],
+            "tipo_col": fallback["tipo_col"],
+            "resultado_col": fallback["resultado_col"],
+            "detected": False,
+        }
+
+    if verbose:
+        print("")
+        print("Detected table columns:")
+        print(f"  detected:      {best['detected']}")
+        print(f"  header row:    {best['header_row']}")
+        print(f"  codigo_col:    {best['codigo_col']}")
+        print(f"  tipo_col:      {best['tipo_col']}")
+        print(f"  resultado_col: {best['resultado_col']}")
+
+    return best
+
+
+# ============================================================
+# DATABASE
 # ============================================================
 
 def create_database(sqlite_path):
@@ -311,9 +389,15 @@ def create_database(sqlite_path):
             source_sheet TEXT,
             source_row INTEGER,
 
+            header_row INTEGER,
+            columns_detected INTEGER,
+
             codigo_col TEXT,
             tipo_col TEXT,
             resultado_col TEXT,
+
+            raw_tipo TEXT,
+            raw_resultado TEXT,
 
             duplicated_from_source_row INTEGER
         )
@@ -351,13 +435,19 @@ def insert_record(conn, record):
             source_sheet,
             source_row,
 
+            header_row,
+            columns_detected,
+
             codigo_col,
             tipo_col,
             resultado_col,
 
+            raw_tipo,
+            raw_resultado,
+
             duplicated_from_source_row
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["codigo_muestra"],
@@ -373,9 +463,15 @@ def insert_record(conn, record):
             record["source_sheet"],
             record["source_row"],
 
+            record["header_row"],
+            record["columns_detected"],
+
             record["codigo_col"],
             record["tipo_col"],
             record["resultado_col"],
+
+            record["raw_tipo"],
+            record["raw_resultado"],
 
             record["duplicated_from_source_row"],
         ),
@@ -397,18 +493,27 @@ def make_record_from_row(
     version,
     fecha,
     source_file,
+    header_row,
+    columns_detected,
     duplicated_from_source_row=None,
+    require_tipo=True,
 ):
-    codigo = normalize_code(ws[f"{codigo_col}{row}"].value)
-    tipo = normalize_text(ws[f"{tipo_col}{row}"].value).upper()
+    raw_codigo = ws[f"{codigo_col}{row}"].value
+    raw_tipo = ws[f"{tipo_col}{row}"].value
     raw_resultado = ws[f"{resultado_col}{row}"].value
+
+    codigo = normalize_code(raw_codigo)
+    tipo = normalize_tipo(raw_tipo)
     resultado = parse_number(raw_resultado)
 
     if codigo == "":
         return None, "empty codigo"
 
-    if tipo == "":
+    if require_tipo and tipo == "":
         return None, "empty tipo"
+
+    if tipo == "":
+        tipo = "D_BELOW"
 
     if resultado is None:
         return None, f"invalid resultado: {raw_resultado!r}"
@@ -427,9 +532,15 @@ def make_record_from_row(
         "source_sheet": ws.title,
         "source_row": row,
 
+        "header_row": header_row,
+        "columns_detected": 1 if columns_detected else 0,
+
         "codigo_col": codigo_col,
         "tipo_col": tipo_col,
         "resultado_col": resultado_col,
+
+        "raw_tipo": normalize_text(raw_tipo),
+        "raw_resultado": normalize_text(raw_resultado),
 
         "duplicated_from_source_row": duplicated_from_source_row,
     }
@@ -454,9 +565,6 @@ def extract_records_from_workbook(
     metodo = detect_method(excel_file)
     settings = settings_for_version(version)
 
-    codigo_col = settings["codigo_col"]
-    tipo_col = settings["tipo_col"]
-    resultado_col = settings["resultado_col"]
     date_cell = settings["date_cell"]
     password = settings["password"]
 
@@ -466,15 +574,12 @@ def extract_records_from_workbook(
     print("============================================================")
     print("EXTRACTING FILE")
     print("============================================================")
-    print(f"File:          {excel_file}")
-    print(f"Version:       {version}")
-    print(f"Method:        {metodo}")
-    print(f"Sheet:         {sheet_name}")
-    print(f"Codigo column: {codigo_col}")
-    print(f"Tipo column:   {tipo_col}")
-    print(f"Result column: {resultado_col}")
-    print(f"Date cell:     {date_cell}")
-    print(f"Password:      {password!r}")
+    print(f"File:      {excel_file}")
+    print(f"Version:   {version}")
+    print(f"Method:    {metodo}")
+    print(f"Sheet:     {sheet_name}")
+    print(f"Date cell: {date_cell}")
+    print(f"Password:  {password!r}")
 
     wb = open_workbook_for_reading(
         excel_file=excel_file,
@@ -484,12 +589,24 @@ def extract_records_from_workbook(
 
     ws = get_sheet(wb, preferred_sheet=sheet_name)
 
+    column_info = detect_table_columns(
+        ws=ws,
+        version=version,
+        verbose=True,
+    )
+
+    codigo_col = column_info["codigo_col"]
+    tipo_col = column_info["tipo_col"]
+    resultado_col = column_info["resultado_col"]
+    header_row = column_info["header_row"]
+    columns_detected = column_info["detected"]
+
     fallback_date = extract_date_from_filename(excel_file)
     fecha = normalize_date(ws[date_cell].value, fallback=fallback_date)
 
-    print(f"Date found:    {fecha}")
-    print(f"Using sheet:   {ws.title}")
-    print(f"Max row:       {ws.max_row}")
+    print(f"Date found: {fecha}")
+    print(f"Using sheet:{ws.title}")
+    print(f"Max row:    {ws.max_row}")
 
     try:
         source_file = str(excel_file.relative_to(input_dir))
@@ -501,8 +618,12 @@ def extract_records_from_workbook(
     extracted_d_below = 0
     skipped = 0
 
-    for row in range(1, ws.max_row + 1):
-        tipo = normalize_text(ws[f"{tipo_col}{row}"].value).upper()
+    start_row = 1
+    if header_row is not None:
+        start_row = header_row + 1
+
+    for row in range(start_row, ws.max_row + 1):
+        tipo = normalize_tipo(ws[f"{tipo_col}{row}"].value)
 
         if tipo == "MRI":
             record, reason = make_record_from_row(
@@ -516,7 +637,10 @@ def extract_records_from_workbook(
                 version=version,
                 fecha=fecha,
                 source_file=source_file,
+                header_row=header_row,
+                columns_detected=columns_detected,
                 duplicated_from_source_row=None,
+                require_tipo=True,
             )
 
             if record is None:
@@ -545,7 +669,10 @@ def extract_records_from_workbook(
                 version=version,
                 fecha=fecha,
                 source_file=source_file,
+                header_row=header_row,
+                columns_detected=columns_detected,
                 duplicated_from_source_row=None,
+                require_tipo=True,
             )
 
             if record is None:
@@ -562,7 +689,6 @@ def extract_records_from_workbook(
                         f"resultado={record['resultado']}"
                     )
 
-            # Also extract row immediately below D
             below_row = row + 1
 
             if below_row <= ws.max_row:
@@ -577,7 +703,10 @@ def extract_records_from_workbook(
                     version=version,
                     fecha=fecha,
                     source_file=source_file,
+                    header_row=header_row,
+                    columns_detected=columns_detected,
                     duplicated_from_source_row=row,
+                    require_tipo=False,
                 )
 
                 if below_record is None:
@@ -684,9 +813,13 @@ def export_csv(records, csv_path):
         "source_file",
         "source_sheet",
         "source_row",
+        "header_row",
+        "columns_detected",
         "codigo_col",
         "tipo_col",
         "resultado_col",
+        "raw_tipo",
+        "raw_resultado",
         "duplicated_from_source_row",
     ]
 
@@ -723,13 +856,13 @@ def build_colorimetric_database(
     print(f"CSV output: {csv_path}")
     print("")
     print("Rules:")
-    print("  Ver.02: codigo=C, tipo=D, resultado=O, fecha=E10, password=12")
-    print("  Ver.04: codigo=C, tipo=F, resultado=Q, fecha=T12")
-    print("  Ver.05: codigo=C, tipo=F, resultado=Q, fecha=T13")
-    print("  Extract rows where tipo is MRI")
-    print("  Extract rows where tipo is D")
-    print("  Also extract the row immediately below every D as D_BELOW")
-    print("  Method comes from filename: OLSEN or BRAY Y KURTZ")
+    print("  Columns are detected from the header row.")
+    print("  Fallback Ver.02: codigo=C, tipo=E, resultado=P, fecha=E10, password=12")
+    print("  Fallback Ver.04: codigo=C, tipo=F, resultado=Q, fecha=T12")
+    print("  Fallback Ver.05: codigo=C, tipo=F, resultado=Q, fecha=T12")
+    print("  Extract MRI")
+    print("  Extract D")
+    print("  Extract row immediately below D as D_BELOW")
     print("============================================================")
 
     if not input_dir.exists():
@@ -744,15 +877,13 @@ def build_colorimetric_database(
     conn = create_database(sqlite_path)
 
     all_records = []
-
-    total_files = len(excel_files)
     successful_files = 0
     failed_files = 0
 
     for index, excel_file in enumerate(excel_files, start=1):
         print("")
         print("############################################################")
-        print(f"PROCESSING {index}/{total_files}")
+        print(f"PROCESSING {index}/{len(excel_files)}")
         print("############################################################")
 
         try:
@@ -786,7 +917,7 @@ def build_colorimetric_database(
     print("============================================================")
     print("DATABASE BUILD FINISHED")
     print("============================================================")
-    print(f"Files selected:     {total_files}")
+    print(f"Files selected:     {len(excel_files)}")
     print(f"Successful files:   {successful_files}")
     print(f"Failed files:       {failed_files}")
     print(f"Total records:      {len(all_records)}")
