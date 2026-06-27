@@ -1,4 +1,4 @@
-# app.py
+# app_all.py
 # Main INIA_SVNB browser app
 #
 # Workflow:
@@ -226,6 +226,8 @@ HTML_PAGE = """
         This main app runs the workflow from the root folder:
         <br>
         <b>input.dat spectrometer CSV list → colorimetric XLSM → pH database → final XLSM with pH</b>
+        <br><br>
+        Password-protected pH Excel files will use password <b>12</b> by default.
     </div>
 
     <form method="post">
@@ -238,7 +240,7 @@ HTML_PAGE = """
         </div>
 
         <div class="small">
-            This app now uses the existing <b>input.dat</b>.  
+            This app now uses the existing <b>input.dat</b>.
             That file must contain the spectrometer CSV filenames, one per line.
             The CSV files must be inside <b>input/</b>.
         </div>
@@ -289,6 +291,20 @@ HTML_PAGE = """
                     name="ph_sheet_name"
                     value="{{ values.ph_sheet_name }}"
                 >
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col">
+                <label>Excel password for pH files</label>
+                <input
+                    type="text"
+                    name="excel_password"
+                    value="{{ values.excel_password }}"
+                >
+                <div class="small">
+                    Default password: 12
+                </div>
             </div>
         </div>
 
@@ -571,6 +587,9 @@ def update_ph_database(values):
         "--sheet-name",
         values["ph_sheet_name"],
 
+        "--excel-password",
+        values["excel_password"],
+
         "--quiet",
     ]
 
@@ -748,6 +767,7 @@ def get_default_values():
         "ph_folder": r"G:\Mi unidad\LABSAF ILLPA\1. Documentos Internos\7.5 Registros Tecnicos\2026\SUELOS\1.pH",
         "ph_file_filter": "Ver.03",
         "ph_sheet_name": "F-103",
+        "excel_password": "12",
 
         "fill_sheet_name": "P_DIS",
         "fill_code_col": "C",
