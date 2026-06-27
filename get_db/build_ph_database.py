@@ -1,10 +1,13 @@
 # build_ph_database.py
 
 from pathlib import Path
+from io import BytesIO
 import re
 import csv
 import sqlite3
 import argparse
+
+import msoffcrypto
 from openpyxl import load_workbook
 
 
@@ -14,6 +17,52 @@ from openpyxl import load_workbook
 
 def default_log(message):
     print(message)
+
+
+# ============================================================
+# EXCEL OPEN HELPER
+# ============================================================
+
+def open_excel_workbook(excel_file, password="12", data_only=True, read_only=True):
+    """
+    Open normal or password-protected Excel files.
+
+    Normal .xlsx/.xlsm files are opened directly with openpyxl.
+    Password-protected files are decrypted first using msoffcrypto,
+    then opened with openpyxl.
+
+    Password used by default: "12"
+    """
+    try:
+        return load_workbook(
+            excel_file,
+            data_only=data_only,
+            read_only=read_only,
+        )
+
+    except Exception as normal_error:
+        decrypted_file = BytesIO()
+
+        try:
+            with open(excel_file, "rb") as f:
+                office_file = msoffcrypto.OfficeFile(f)
+                office_file.load_key(password=password)
+                office_file.decrypt(decrypted_file)
+
+            decrypted_file.seek(0)
+
+            return load_workbook(
+                decrypted_file,
+                data_only=data_only,
+                read_only=read_only,
+            )
+
+        except Exception as password_error:
+            raise RuntimeError(
+                f"Could not open Excel file normally or with password '{password}'. "
+                f"Normal error: {normal_error}. "
+                f"Password error: {password_error}"
+            )
 
 
 # ============================================================
@@ -195,6 +244,12 @@ def get_excel_files(ph_folder, file_name_filter, log):
         list(ph_folder.glob("*.xlsm"))
     )
 
+    # Ignore Excel temporary lock files
+    all_excel_files = [
+        path for path in all_excel_files
+        if not path.name.startswith("~$")
+    ]
+
     filtered_files = [
         path for path in all_excel_files
         if file_name_filter.upper() in path.name.upper()
@@ -298,6 +353,7 @@ def build_ph_database(
     csv_file,
     file_name_filter="Ver.03",
     ph_sheet_name="F-103",
+    excel_password="12",
     ph_first_row=27,
     block_size=21,
     gap_rows=2,
@@ -317,10 +373,6 @@ def build_ph_database(
     """
 
     log = log_callback if log_callback is not None else default_log
-
-    def vprint(message):
-        if verbose:
-            log(message)
 
     ph_folder = Path(ph_folder)
     db_path = Path(database_file)
@@ -343,6 +395,8 @@ def build_ph_database(
     log(f"  {ph_sheet_name}")
     log("Filename filter:")
     log(f"  {file_name_filter}")
+    log("Excel password:")
+    log(f"  {excel_password}")
     log("Columns:")
     log(f"  {duplicate_col} = duplicate")
     log(f"  {code_col} = code")
@@ -396,7 +450,12 @@ def build_ph_database(
         try:
             log("")
             log("Opening workbook...")
-            wb = load_workbook(excel_file, data_only=True, read_only=True)
+            wb = open_excel_workbook(
+                excel_file,
+                password=excel_password,
+                data_only=True,
+                read_only=True,
+            )
 
             log("Workbook opened.")
             log("Available sheets:")
@@ -605,6 +664,12 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--excel-password",
+        default="12",
+        help="Password for protected Excel files. Default: 12"
+    )
+
+    parser.add_argument(
         "--first-row",
         type=int,
         default=27,
@@ -661,6 +726,7 @@ def main():
         csv_file=args.csv_file,
         file_name_filter=args.file_name_filter,
         ph_sheet_name=args.sheet_name,
+        excel_password=args.excel_password,
         ph_first_row=args.first_row,
         block_size=args.block_size,
         gap_rows=args.gap_rows,
