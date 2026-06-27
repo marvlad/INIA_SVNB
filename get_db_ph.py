@@ -1,9 +1,12 @@
 # build_ph_database_from_excel_files_Ver03_only.py
 
 from pathlib import Path
+from io import BytesIO
 import re
 import csv
 import sqlite3
+
+import msoffcrypto
 from openpyxl import load_workbook
 
 
@@ -22,6 +25,9 @@ FILE_NAME_FILTER = "Ver.03"
 
 # pH Excel tab
 PH_SHEET_NAME = "F-103"
+
+# Password used only if the Excel file needs one.
+EXCEL_PASSWORD = "12"
 
 # pH file structure
 PH_FIRST_ROW = 27
@@ -49,6 +55,44 @@ VERBOSE = True
 def vprint(message):
     if VERBOSE:
         print(message)
+
+
+# ============================================================
+# EXCEL OPEN HELPER
+# ============================================================
+
+def open_excel_workbook(excel_file, password=EXCEL_PASSWORD):
+    """
+    Open an Excel workbook.
+
+    First tries normally.
+    If the file is password-protected/encrypted, it tries again using password="12".
+    """
+    try:
+        return load_workbook(excel_file, data_only=True, read_only=True)
+
+    except Exception as first_error:
+        print("")
+        print("Normal open failed. Trying with password...")
+
+        try:
+            decrypted = BytesIO()
+
+            with open(excel_file, "rb") as file_handle:
+                office_file = msoffcrypto.OfficeFile(file_handle)
+                office_file.load_key(password=password)
+                office_file.decrypt(decrypted)
+
+            decrypted.seek(0)
+
+            return load_workbook(decrypted, data_only=True, read_only=True)
+
+        except Exception as second_error:
+            raise RuntimeError(
+                f"Could not open workbook normally or with password '{password}'. "
+                f"Normal error: {first_error}. "
+                f"Password error: {second_error}"
+            )
 
 
 # ============================================================
@@ -360,6 +404,8 @@ def build_ph_database():
     print(f"  {PH_SHEET_NAME}")
     print("Filename filter:")
     print(f"  {FILE_NAME_FILTER}")
+    print("Excel password if needed:")
+    print(f"  {EXCEL_PASSWORD}")
     print("Columns:")
     print(f"  {PH_DUPLICATE_COL} = duplicate")
     print(f"  {PH_CODE_COL} = code")
@@ -411,7 +457,7 @@ def build_ph_database():
         try:
             print("")
             print("Opening workbook...")
-            wb = load_workbook(excel_file, data_only=True, read_only=True)
+            wb = open_excel_workbook(excel_file, password=EXCEL_PASSWORD)
 
             print("Workbook opened.")
             print("Available sheets:")
