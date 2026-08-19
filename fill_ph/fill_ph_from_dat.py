@@ -541,7 +541,8 @@ def fill_one_xlsm_from_lookup(
             continue
 
         record = ph_lookup[su_number]
-        ph = record["ph"]
+        #ph = record["ph"]
+        ph = round(record["ph"], 1)
 
         if verbose:
             log("  FOUND pH:")
@@ -556,6 +557,7 @@ def fill_one_xlsm_from_lookup(
             log(f"    Value: {ph}")
 
         ws_out[output_cell] = ph
+        ws_out[output_cell].number_format = "0.0"
         written += 1
 
         detail_log.append(
