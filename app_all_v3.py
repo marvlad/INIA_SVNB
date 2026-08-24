@@ -1,4 +1,5 @@
-# all_app_v2.py
+# all_app_v3.py
+#
 # Main INIA_SVNB browser app
 #
 # Workflow:
@@ -8,6 +9,17 @@
 #   4. Update pH database with fixed names in the root directory
 #   5. Fill pH into generated reports
 #   6. Save final files in final_report/bray or final_report/olsen
+#
+# IMPORTANT:
+#
+#   output/bray/ and output/olsen/
+#       contain temporary/intermediate reports WITHOUT pH.
+#       These may be cleaned before a new run.
+#
+#   final_report/bray/ and final_report/olsen/
+#       contain completed reports WITH pH.
+#       These directories are NEVER cleaned by this application.
+
 
 from pathlib import Path
 import subprocess
@@ -42,19 +54,44 @@ FINAL_REPORT_DIR = BASE_DIR / "final_report"
 # INIA_SVNB/banner/banner.jpeg
 BANNER_DIR = BASE_DIR / "banner"
 
-UPDATE_COLOR_SCRIPT = BASE_DIR / "update_colorimetric_report.py"
+UPDATE_COLOR_SCRIPT = (
+    BASE_DIR
+    / "update_colorimetric_report.py"
+)
 
-GET_DB_DIR = BASE_DIR / "get_db"
-BUILD_PH_SCRIPT = GET_DB_DIR / "build_ph_database.py"
+GET_DB_DIR = (
+    BASE_DIR
+    / "get_db"
+)
 
-FILL_PH_DIR = BASE_DIR / "fill_ph"
-FILL_PH_SCRIPT = FILL_PH_DIR / "fill_ph_from_dat.py"
+BUILD_PH_SCRIPT = (
+    GET_DB_DIR
+    / "build_ph_database.py"
+)
 
-PH_DATABASE_FILE = BASE_DIR / "ph_database_Ver03.sqlite"
-PH_CSV_FILE = BASE_DIR / "ph_database_Ver03.csv"
+FILL_PH_DIR = (
+    BASE_DIR
+    / "fill_ph"
+)
+
+FILL_PH_SCRIPT = (
+    FILL_PH_DIR
+    / "fill_ph_from_dat.py"
+)
+
+PH_DATABASE_FILE = (
+    BASE_DIR
+    / "ph_database_Ver03.sqlite"
+)
+
+PH_CSV_FILE = (
+    BASE_DIR
+    / "ph_database_Ver03.csv"
+)
 
 HOST = "127.0.0.1"
 PORT = 5000
+
 URL = f"http://{HOST}:{PORT}"
 
 
@@ -206,12 +243,6 @@ body {
 }
 
 
-/*
-Extra subtle shading at the bottom
-to help the text remain visible on
-bright photographs.
-*/
-
 .banner::after {
     content: "";
 
@@ -243,8 +274,6 @@ bright photographs.
     max-width: 820px;
 }
 
-
-/* Original application title */
 
 .original-title {
     display: inline-block;
@@ -279,8 +308,6 @@ bright photographs.
 }
 
 
-/* PICASSO */
-
 .picasso-title {
     margin: 0;
 
@@ -301,8 +328,6 @@ bright photographs.
         rgba(0, 0, 0, 0.40);
 }
 
-
-/* Acronym expansion */
 
 .picasso-acronym {
     margin-top:
@@ -346,8 +371,6 @@ bright photographs.
         1px;
 }
 
-
-/* Small final subtitle */
 
 .banner-subtitle {
     margin-top:
@@ -790,8 +813,6 @@ pre {
 
     <!-- ======================================================
          PICASSO BANNER
-         Background image:
-         banner/banner.jpeg
          ====================================================== -->
 
     <div class="banner">
@@ -863,6 +884,18 @@ pre {
             → pH database
             → final XLSM with pH
         </b>
+
+        <br><br>
+
+        Temporary reports inside
+        <b>output/</b>
+        are cleaned before a new run.
+
+        <br>
+
+        Existing reports inside
+        <b>final_report/</b>
+        are preserved.
 
         <br><br>
 
@@ -958,15 +991,10 @@ pre {
 
 
         <input
-
             type="text"
-
             name="ph_folder"
-
             value="{{ values.ph_folder }}"
-
             placeholder="G:\\Mi unidad\\LABSAF ILLPA\\1. Documentos Internos\\7.5 Registros Tecnicos\\2026\\SUELOS\\1.pH"
-
         >
 
 
@@ -1093,6 +1121,9 @@ pre {
             <b>final_report/bray</b>
             or
             <b>final_report/olsen</b>.
+
+            Existing final reports are not removed during
+            temporary-output cleanup.
 
         </div>
 
@@ -1335,12 +1366,23 @@ pre {
 # HELPERS
 # ============================================================
 
-def run_command(command, cwd):
 
-    env = dict(os.environ)
+def run_command(
+    command,
+    cwd,
+):
 
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
+    env = dict(
+        os.environ
+    )
+
+    env[
+        "PYTHONIOENCODING"
+    ] = "utf-8"
+
+    env[
+        "PYTHONUTF8"
+    ] = "1"
 
     result = subprocess.run(
         command,
@@ -1356,93 +1398,144 @@ def run_command(command, cwd):
     output = ""
 
     if result.stdout:
-        output += result.stdout
+
+        output += (
+            result.stdout
+        )
 
     if result.stderr:
-        output += "\n\nSTDERR:\n"
-        output += result.stderr
 
-    success = result.returncode == 0
+        output += (
+            "\n\nSTDERR:\n"
+        )
 
-    return success, output
+        output += (
+            result.stderr
+        )
 
-
-def get_methods(method):
-
-    if method == "Both":
-        return ["Bray", "Olsen"]
-
-    return [method]
-
-
-def clean_previous_outputs(method):
-
-    """
-    Remove generated files from previous runs for one method.
-
-    This makes the current run contain only reports generated from
-    the CSV files currently listed in input.dat.
-
-    Removed:
-        output/<method>/Analizado*.xlsm
-        output/<method>/input_for_ph.dat
-        final_report/<method>/*.xlsm
-
-    Other files in those directories are left untouched.
-    """
-
-    method_lower = method.lower()
-
-    method_output_dir = OUTPUT_DIR / method_lower
-    method_output_dir.mkdir(
-        parents=True,
-        exist_ok=True
+    success = (
+        result.returncode
+        == 0
     )
 
-    final_method_dir = FINAL_REPORT_DIR / method_lower
-    final_method_dir.mkdir(
+    return (
+        success,
+        output,
+    )
+
+
+def get_methods(
+    method,
+):
+
+    if method == "Both":
+
+        return [
+            "Bray",
+            "Olsen",
+        ]
+
+    return [
+        method
+    ]
+
+
+# ============================================================
+# CLEAN TEMPORARY OUTPUTS
+# ============================================================
+
+
+def clean_previous_outputs(
+    method,
+):
+
+    """
+    Remove ONLY temporary/intermediate files from output/<method>.
+
+    Removed:
+
+        output/<method>/Analizado*.xlsm
+        output/<method>/input_for_ph.dat
+
+    NEVER touched:
+
+        final_report/bray/
+        final_report/olsen/
+
+    final_report contains completed reports with pH and may
+    contain manual analyst notes.
+
+    Therefore this function must NEVER delete, clean, or modify
+    anything inside final_report/.
+    """
+
+    method_lower = (
+        method.lower()
+    )
+
+    method_output_dir = (
+        OUTPUT_DIR
+        / method_lower
+    )
+
+    method_output_dir.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
     deleted_output_files = []
-    deleted_final_files = []
 
-    # Delete old generated colorimetric reports.
-    for path in method_output_dir.glob(
-        "Analizado*.xlsm"
+    # --------------------------------------------------------
+    # Delete old temporary colorimetric reports WITHOUT pH.
+    #
+    # ONLY:
+    #
+    #   output/bray/Analizado*.xlsm
+    #
+    # or:
+    #
+    #   output/olsen/Analizado*.xlsm
+    #
+    # --------------------------------------------------------
+
+    for path in (
+        method_output_dir.glob(
+            "Analizado*.xlsm"
+        )
     ):
 
         if path.is_file():
+
             path.unlink()
+
             deleted_output_files.append(
                 path.name
             )
 
-    # Delete the old generated DAT list.
+    # --------------------------------------------------------
+    # Delete old temporary DAT list.
+    # --------------------------------------------------------
+
     input_for_ph = (
         method_output_dir
         / "input_for_ph.dat"
     )
 
-    if input_for_ph.exists():
-        input_for_ph.unlink()
-
-    # Delete old final XLSM reports for this method.
-    for path in final_method_dir.glob(
-        "*.xlsm"
+    if (
+        input_for_ph.exists()
     ):
 
-        if path.is_file():
-            path.unlink()
-            deleted_final_files.append(
-                path.name
-            )
+        input_for_ph.unlink()
+
+    # --------------------------------------------------------
+    # ABSOLUTELY NO final_report cleanup here.
+    # --------------------------------------------------------
 
     msg = ""
 
     msg += (
-        f"Cleaning previous {method} run...\n"
+        f"Cleaning previous temporary "
+        f"{method} output...\n"
     )
 
     msg += (
@@ -1451,16 +1544,21 @@ def clean_previous_outputs(method):
     )
 
     msg += (
-        "Old final reports deleted: "
-        f"{len(deleted_final_files)}\n"
+        "Old input_for_ph.dat removed "
+        "if it existed.\n"
     )
 
     msg += (
-        "Current run will contain only files "
-        "generated from input.dat.\n"
+        "final_report was NOT cleaned "
+        "or deleted.\n"
     )
 
     return msg
+
+
+# ============================================================
+# INPUT.DAT CHECK
+# ============================================================
 
 
 def check_input_dat():
@@ -1471,151 +1569,243 @@ def check_input_dat():
 
         return (
             False,
-            f"input.dat was not found:\n  {INPUT_DAT}\n"
+            (
+                "input.dat was not found:\n"
+                f"  {INPUT_DAT}\n"
+            ),
         )
 
     if not INPUT_DIR.exists():
 
         return (
             False,
-            f"input folder was not found:\n  {INPUT_DIR}\n"
+            (
+                "input folder was not found:\n"
+                f"  {INPUT_DIR}\n"
+            ),
         )
 
     with open(
         INPUT_DAT,
         "r",
-        encoding="utf-8-sig"
+        encoding="utf-8-sig",
     ) as f:
 
         lines = [
+
             line.strip()
+
             for line in f
-            if line.strip()
-            and not line.strip().startswith("#")
+
+            if (
+                line.strip()
+                and not
+                line.strip().startswith(
+                    "#"
+                )
+            )
         ]
 
     if not lines:
 
         return (
             False,
-            f"input.dat is empty:\n  {INPUT_DAT}\n"
+            (
+                "input.dat is empty:\n"
+                f"  {INPUT_DAT}\n"
+            ),
         )
 
-    output += "input.dat found:\n"
-    output += f"  {INPUT_DAT}\n"
-    output += f"CSV names listed: {len(lines)}\n"
+    output += (
+        "input.dat found:\n"
+    )
+
+    output += (
+        f"  {INPUT_DAT}\n"
+    )
+
+    output += (
+        f"CSV names listed: "
+        f"{len(lines)}\n"
+    )
 
     missing = []
 
     for csv_name in lines:
 
-        csv_path = INPUT_DIR / csv_name
+        csv_path = (
+            INPUT_DIR
+            / csv_name
+        )
 
         if not csv_path.exists():
-            missing.append(csv_name)
+
+            missing.append(
+                csv_name
+            )
 
     if missing:
 
-        output += "\nMissing CSV files inside input/:\n"
+        output += (
+            "\nMissing CSV files "
+            "inside input/:\n"
+        )
 
         for name in missing:
-            output += f"  - {name}\n"
 
-        return False, output
+            output += (
+                f"  - {name}\n"
+            )
+
+        return (
+            False,
+            output,
+        )
 
     output += (
         "\nAll CSV files listed in input.dat "
         "were found inside input/.\n"
     )
 
-    return True, output
+    return (
+        True,
+        output,
+    )
 
 
-def generate_colorimetric_reports(method):
+# ============================================================
+# GENERATE COLORIMETRIC REPORTS
+# ============================================================
+
+
+def generate_colorimetric_reports(
+    method,
+):
 
     output = ""
 
-    ok, msg = check_input_dat()
+    ok, msg = (
+        check_input_dat()
+    )
 
     output += msg
 
     if not ok:
-        return False, output
+
+        return (
+            False,
+            output,
+        )
 
     if not UPDATE_COLOR_SCRIPT.exists():
 
         return (
             False,
-            f"Script not found:\n  {UPDATE_COLOR_SCRIPT}\n"
+            (
+                "Script not found:\n"
+                f"  {UPDATE_COLOR_SCRIPT}\n"
+            ),
         )
 
     all_success = True
 
-    for one_method in get_methods(method):
+    for one_method in (
+        get_methods(
+            method
+        )
+    ):
 
         output += "\n"
+
         output += (
             "============================================================\n"
         )
+
         output += (
             f"PREPARING NEW RUN: "
             f"{one_method}\n"
         )
+
         output += (
             "============================================================\n"
         )
 
         # ----------------------------------------------------
-        # Remove files from previous runs BEFORE generating.
+        # Remove ONLY temporary output from previous run.
+        #
+        # final_report is NEVER cleaned.
         # ----------------------------------------------------
 
         try:
 
-            clean_msg = clean_previous_outputs(
-                one_method
+            clean_msg = (
+                clean_previous_outputs(
+                    one_method
+                )
             )
 
-            output += clean_msg
+            output += (
+                clean_msg
+            )
 
         except Exception:
 
             all_success = False
 
             output += (
-                "\nERROR cleaning previous files:\n"
+                "\nERROR cleaning previous "
+                "temporary output files:\n"
             )
 
-            output += traceback.format_exc()
+            output += (
+                traceback.format_exc()
+            )
 
-            # Do not generate into a directory that may still
-            # contain stale files from an earlier run.
+            # Do not generate into a directory that may
+            # still contain stale temporary files.
             continue
 
         output += "\n"
+
         output += (
             "============================================================\n"
         )
+
         output += (
             f"GENERATING COLORIMETRIC REPORTS: "
             f"{one_method}\n"
         )
+
         output += (
             "============================================================\n"
         )
 
         command = [
+
             sys.executable,
-            str(UPDATE_COLOR_SCRIPT),
+
+            str(
+                UPDATE_COLOR_SCRIPT
+            ),
+
             "--method",
+
             one_method,
         ]
 
-        success, cmd_output = run_command(
+        (
+            success,
+            cmd_output,
+        ) = run_command(
+
             command,
-            cwd=BASE_DIR
+
+            cwd=BASE_DIR,
         )
 
-        output += cmd_output
+        output += (
+            cmd_output
+        )
 
         if not success:
 
@@ -1626,9 +1816,8 @@ def generate_colorimetric_reports(method):
                 f"{one_method} reports.\n"
             )
 
-            # Important: do not create input_for_ph.dat after
-            # a failed generation. This prevents stale or partial
-            # files from being sent into the pH stage.
+            # Do not create input_for_ph.dat after
+            # failed generation.
             continue
 
         output += (
@@ -1638,80 +1827,136 @@ def generate_colorimetric_reports(method):
 
         try:
 
-            dat_msg = create_input_for_ph_dat(
-                one_method
+            dat_msg = (
+                create_input_for_ph_dat(
+                    one_method
+                )
             )
 
             output += "\n"
-            output += dat_msg
+
+            output += (
+                dat_msg
+            )
 
         except Exception:
 
             all_success = False
 
             output += (
-                "\nERROR creating input_for_ph.dat:\n"
+                "\nERROR creating "
+                "input_for_ph.dat:\n"
             )
 
-            output += traceback.format_exc()
+            output += (
+                traceback.format_exc()
+            )
 
-    return all_success, output
+    return (
+        all_success,
+        output,
+    )
 
 
-def update_ph_database(values):
+# ============================================================
+# UPDATE PH DATABASE
+# ============================================================
+
+
+def update_ph_database(
+    values,
+):
 
     if not BUILD_PH_SCRIPT.exists():
 
         return (
             False,
-            f"Script not found:\n  {BUILD_PH_SCRIPT}\n"
+            (
+                "Script not found:\n"
+                f"  {BUILD_PH_SCRIPT}\n"
+            ),
         )
 
-    ph_folder = values["ph_folder"].strip()
+    ph_folder = (
+        values[
+            "ph_folder"
+        ].strip()
+    )
 
     if not ph_folder:
 
         return (
             False,
-            "pH folder is empty. "
-            "Please provide the folder containing "
-            "pH Excel files.\n"
+            (
+                "pH folder is empty. "
+                "Please provide the folder "
+                "containing pH Excel files.\n"
+            ),
         )
 
     command = [
+
         sys.executable,
-        str(BUILD_PH_SCRIPT),
+
+        str(
+            BUILD_PH_SCRIPT
+        ),
 
         "--ph-folder",
         ph_folder,
 
         "--database-file",
-        str(PH_DATABASE_FILE),
+        str(
+            PH_DATABASE_FILE
+        ),
 
         "--csv-file",
-        str(PH_CSV_FILE),
+        str(
+            PH_CSV_FILE
+        ),
 
         "--file-name-filter",
-        values["ph_file_filter"],
+        values[
+            "ph_file_filter"
+        ],
 
         "--sheet-name",
-        values["ph_sheet_name"],
+        values[
+            "ph_sheet_name"
+        ],
 
         "--excel-password",
-        values["excel_password"],
+        values[
+            "excel_password"
+        ],
 
         "--quiet",
     ]
 
-    success, output = run_command(
+    (
+        success,
+        output,
+    ) = run_command(
+
         command,
-        cwd=GET_DB_DIR
+
+        cwd=GET_DB_DIR,
     )
 
-    return success, output
+    return (
+        success,
+        output,
+    )
 
 
-def create_input_for_ph_dat(method):
+# ============================================================
+# CREATE INPUT_FOR_PH.DAT
+# ============================================================
+
+
+def create_input_for_ph_dat(
+    method,
+):
 
     """
     Create:
@@ -1725,25 +1970,34 @@ def create_input_for_ph_dat(method):
         output/olsen/Analizado_*.xlsm
     """
 
-    method_lower = method.lower()
+    method_lower = (
+        method.lower()
+    )
 
     method_output_dir = (
-        OUTPUT_DIR / method_lower
+        OUTPUT_DIR
+        / method_lower
     )
 
     if not method_output_dir.exists():
 
         raise FileNotFoundError(
-            f"Generated output folder does not exist: "
+            "Generated output folder "
+            "does not exist: "
             f"{method_output_dir}"
         )
 
     xlsm_files = sorted(
         [
+
             path
-            for path in method_output_dir.glob(
-                "Analizado*.xlsm"
+
+            for path in (
+                method_output_dir.glob(
+                    "Analizado*.xlsm"
+                )
             )
+
             if path.is_file()
         ]
     )
@@ -1751,7 +2005,8 @@ def create_input_for_ph_dat(method):
     if not xlsm_files:
 
         raise FileNotFoundError(
-            f"No Analizado*.xlsm files found in: "
+            "No Analizado*.xlsm files "
+            "found in: "
             f"{method_output_dir}"
         )
 
@@ -1763,22 +2018,36 @@ def create_input_for_ph_dat(method):
     with open(
         dat_file,
         "w",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as f:
 
-        for xlsm_file in xlsm_files:
+        for xlsm_file in (
+            xlsm_files
+        ):
 
             f.write(
-                xlsm_file.name + "\n"
+                xlsm_file.name
+                + "\n"
             )
 
     msg = ""
 
-    msg += "Created input_for_ph.dat:\n"
-    msg += f"  {dat_file}\n"
-    msg += f"Files listed: {len(xlsm_files)}\n"
+    msg += (
+        "Created input_for_ph.dat:\n"
+    )
 
-    for xlsm_file in xlsm_files:
+    msg += (
+        f"  {dat_file}\n"
+    )
+
+    msg += (
+        f"Files listed: "
+        f"{len(xlsm_files)}\n"
+    )
+
+    for xlsm_file in (
+        xlsm_files
+    ):
 
         msg += (
             f"  - {xlsm_file.name}\n"
@@ -1787,30 +2056,45 @@ def create_input_for_ph_dat(method):
     return msg
 
 
+# ============================================================
+# FILL PH INTO GENERATED REPORTS
+# ============================================================
+
+
 def fill_ph_into_generated_reports(
     method,
-    values
+    values,
 ):
 
     if not FILL_PH_SCRIPT.exists():
 
         return (
             False,
-            f"Script not found:\n  {FILL_PH_SCRIPT}\n"
+            (
+                "Script not found:\n"
+                f"  {FILL_PH_SCRIPT}\n"
+            ),
         )
 
     if not PH_CSV_FILE.exists():
 
         return (
             False,
-            f"pH CSV file not found:\n  {PH_CSV_FILE}\n"
+            (
+                "pH CSV file not found:\n"
+                f"  {PH_CSV_FILE}\n"
+            ),
         )
 
     all_success = True
 
     output = ""
 
-    for one_method in get_methods(method):
+    for one_method in (
+        get_methods(
+            method
+        )
+    ):
 
         method_lower = (
             one_method.lower()
@@ -1833,20 +2117,33 @@ def fill_ph_into_generated_reports(
 
         try:
 
-            dat_msg = create_input_for_ph_dat(
-                one_method
+            dat_msg = (
+                create_input_for_ph_dat(
+                    one_method
+                )
             )
 
-            output += dat_msg
+            output += (
+                dat_msg
+            )
 
             generated_dir = (
-                OUTPUT_DIR / method_lower
+                OUTPUT_DIR
+                / method_lower
             )
 
             dat_file = (
                 generated_dir
                 / "input_for_ph.dat"
             )
+
+            # ------------------------------------------------
+            # Final reports go here.
+            #
+            # IMPORTANT:
+            # This function does NOT clean this directory.
+            # Existing files are left in place.
+            # ------------------------------------------------
 
             final_method_dir = (
                 FINAL_REPORT_DIR
@@ -1855,7 +2152,7 @@ def fill_ph_into_generated_reports(
 
             final_method_dir.mkdir(
                 parents=True,
-                exist_ok=True
+                exist_ok=True,
             )
 
             output += "\n"
@@ -1876,49 +2173,91 @@ def fill_ph_into_generated_reports(
                 f"  {final_method_dir}\n"
             )
 
+            output += (
+                "Existing final reports are "
+                "not cleaned.\n"
+            )
+
             command = [
+
                 sys.executable,
-                str(FILL_PH_SCRIPT),
+
+                str(
+                    FILL_PH_SCRIPT
+                ),
 
                 "--input-dat",
-                str(dat_file),
+                str(
+                    dat_file
+                ),
 
                 "--input-dir",
-                str(generated_dir),
+                str(
+                    generated_dir
+                ),
 
                 "--ph-csv",
-                str(PH_CSV_FILE),
+                str(
+                    PH_CSV_FILE
+                ),
 
                 "--output-dir",
-                str(final_method_dir),
+                str(
+                    final_method_dir
+                ),
 
                 "--sheet-name",
-                values["fill_sheet_name"],
+                values[
+                    "fill_sheet_name"
+                ],
 
                 "--first-row",
-                str(values["fill_first_row"]),
+                str(
+                    values[
+                        "fill_first_row"
+                    ]
+                ),
 
                 "--block-size",
-                str(values["fill_block_size"]),
+                str(
+                    values[
+                        "fill_block_size"
+                    ]
+                ),
 
                 "--gap-rows",
-                str(values["fill_gap_rows"]),
+                str(
+                    values[
+                        "fill_gap_rows"
+                    ]
+                ),
 
                 "--code-col",
-                values["fill_code_col"],
+                values[
+                    "fill_code_col"
+                ],
 
                 "--output-col",
-                values["fill_output_col"],
+                values[
+                    "fill_output_col"
+                ],
 
                 "--quiet",
             ]
 
-            success, cmd_output = run_command(
+            (
+                success,
+                cmd_output,
+            ) = run_command(
+
                 command,
-                cwd=FILL_PH_DIR
+
+                cwd=FILL_PH_DIR,
             )
 
-            output += cmd_output
+            output += (
+                cmd_output
+            )
 
             if not success:
 
@@ -1944,12 +2283,28 @@ def fill_ph_into_generated_reports(
                 "\nERROR while adding pH:\n"
             )
 
-            output += traceback.format_exc()
+            output += (
+                traceback.format_exc()
+            )
 
-    return all_success, output
+    return (
+        all_success,
+        output,
+    )
+
+
+# ============================================================
+# LIST FINAL REPORT FILES
+# ============================================================
 
 
 def list_final_report_files():
+
+    """
+    Read-only listing of final reports.
+
+    Nothing is deleted or modified here.
+    """
 
     results = []
 
@@ -1964,27 +2319,45 @@ def list_final_report_files():
         )
 
         if not folder.exists():
+
             continue
 
         for path in sorted(
-            folder.glob("*.xlsm")
+            folder.glob(
+                "*.xlsm"
+            )
         ):
 
             if path.is_file():
 
                 results.append(
                     {
-                        "method": method_lower,
-                        "filename": path.name,
+                        "method":
+                            method_lower,
+
+                        "filename":
+                            path.name,
                     }
                 )
 
     return results
 
 
+# ============================================================
+# OPEN BROWSER
+# ============================================================
+
+
 def open_browser():
 
-    webbrowser.open_new(URL)
+    webbrowser.open_new(
+        URL
+    )
+
+
+# ============================================================
+# DEFAULT VALUES
+# ============================================================
 
 
 def get_default_values():
@@ -1995,7 +2368,12 @@ def get_default_values():
             "Bray",
 
         "ph_folder":
-            r"G:\Mi unidad\LABSAF ILLPA\1. Documentos Internos\7.5 Registros Tecnicos\2026\SUELOS\1.pH",
+            (
+                r"G:\Mi unidad\LABSAF ILLPA"
+                r"\1. Documentos Internos"
+                r"\7.5 Registros Tecnicos"
+                r"\2026\SUELOS\1.pH"
+            ),
 
         "ph_file_filter":
             "Ver.03",
@@ -2028,15 +2406,22 @@ def get_default_values():
 
 def get_values_from_form():
 
-    defaults = get_default_values()
+    defaults = (
+        get_default_values()
+    )
 
     values = {}
 
-    for key, default in defaults.items():
+    for (
+        key,
+        default,
+    ) in defaults.items():
 
-        values[key] = request.form.get(
+        values[
+            key
+        ] = request.form.get(
             key,
-            default
+            default,
         ).strip()
 
     return values
@@ -2053,13 +2438,17 @@ def get_values_from_form():
 
 @app.route(
     "/banner/<path:filename>",
-    methods=["GET"]
+    methods=[
+        "GET"
+    ],
 )
-def banner_file(filename):
+def banner_file(
+    filename,
+):
 
     return send_from_directory(
         BANNER_DIR,
-        filename
+        filename,
     )
 
 
@@ -2069,62 +2458,93 @@ def banner_file(filename):
 
 @app.route(
     "/",
-    methods=["GET", "POST"]
+    methods=[
+        "GET",
+        "POST",
+    ],
 )
 def index():
 
     status = None
+
     success = None
+
     output = ""
 
-    files = list_final_report_files()
+    files = (
+        list_final_report_files()
+    )
 
     if request.method == "GET":
 
-        values = get_default_values()
-
-        return render_template_string(
-            HTML_PAGE,
-
-            values=values,
-
-            status=status,
-
-            success=success,
-
-            output=output,
-
-            files=files,
-
-            input_dat_path=
-                str(INPUT_DAT),
-
-            ph_database_file=
-                str(PH_DATABASE_FILE),
-
-            ph_csv_file=
-                str(PH_CSV_FILE),
+        values = (
+            get_default_values()
         )
 
-    values = get_values_from_form()
+        return render_template_string(
+
+            HTML_PAGE,
+
+            values=
+                values,
+
+            status=
+                status,
+
+            success=
+                success,
+
+            output=
+                output,
+
+            files=
+                files,
+
+            input_dat_path=
+                str(
+                    INPUT_DAT
+                ),
+
+            ph_database_file=
+                str(
+                    PH_DATABASE_FILE
+                ),
+
+            ph_csv_file=
+                str(
+                    PH_CSV_FILE
+                ),
+        )
+
+    values = (
+        get_values_from_form()
+    )
 
     action = request.form.get(
         "action",
-        ""
+        "",
     ).strip()
 
     try:
 
-        # --------------------------------------------------------
+        # ----------------------------------------------------
         # GENERATE REPORTS
-        # --------------------------------------------------------
+        # ----------------------------------------------------
 
-        if action == "generate_reports":
+        if (
+            action
+            == "generate_reports"
+        ):
 
-            success, output = (
-                generate_colorimetric_reports(
-                    method=values["method"]
-                )
+            (
+                success,
+                output,
+            ) = generate_colorimetric_reports(
+
+                method=
+                    values[
+                        "method"
+                    ]
             )
 
             if success:
@@ -2142,14 +2562,20 @@ def index():
                 )
 
 
-        # --------------------------------------------------------
+        # ----------------------------------------------------
         # UPDATE PH DATABASE
-        # --------------------------------------------------------
+        # ----------------------------------------------------
 
-        elif action == "update_ph_db":
+        elif (
+            action
+            == "update_ph_db"
+        ):
 
-            success, output = (
-                update_ph_database(values)
+            (
+                success,
+                output,
+            ) = update_ph_database(
+                values
             )
 
             if success:
@@ -2166,17 +2592,27 @@ def index():
                 )
 
 
-        # --------------------------------------------------------
+        # ----------------------------------------------------
         # FILL PH
-        # --------------------------------------------------------
+        # ----------------------------------------------------
 
-        elif action == "fill_ph":
+        elif (
+            action
+            == "fill_ph"
+        ):
 
-            success, output = (
-                fill_ph_into_generated_reports(
-                    method=values["method"],
-                    values=values,
-                )
+            (
+                success,
+                output,
+            ) = fill_ph_into_generated_reports(
+
+                method=
+                    values[
+                        "method"
+                    ],
+
+                values=
+                    values,
             )
 
             if success:
@@ -2194,23 +2630,33 @@ def index():
                 )
 
 
-        # --------------------------------------------------------
+        # ----------------------------------------------------
         # FULL PIPELINE
-        # --------------------------------------------------------
+        # ----------------------------------------------------
 
-        elif action == "full_pipeline":
+        elif (
+            action
+            == "full_pipeline"
+        ):
 
             full_output = ""
 
             full_success = True
 
 
+            # =================================================
             # STEP 1
+            # =================================================
 
-            s1, out1 = (
-                generate_colorimetric_reports(
-                    method=values["method"]
-                )
+            (
+                s1,
+                out1,
+            ) = generate_colorimetric_reports(
+
+                method=
+                    values[
+                        "method"
+                    ]
             )
 
             full_output += (
@@ -2220,16 +2666,24 @@ def index():
                 "================\n"
             )
 
-            full_output += out1
+            full_output += (
+                out1
+            )
 
             if not s1:
+
                 full_success = False
 
 
+            # =================================================
             # STEP 2
+            # =================================================
 
-            s2, out2 = (
-                update_ph_database(values)
+            (
+                s2,
+                out2,
+            ) = update_ph_database(
+                values
             )
 
             full_output += (
@@ -2239,19 +2693,31 @@ def index():
                 "================\n"
             )
 
-            full_output += out2
+            full_output += (
+                out2
+            )
 
             if not s2:
+
                 full_success = False
 
 
+            # =================================================
             # STEP 3
+            # =================================================
 
-            s3, out3 = (
-                fill_ph_into_generated_reports(
-                    method=values["method"],
-                    values=values,
-                )
+            (
+                s3,
+                out3,
+            ) = fill_ph_into_generated_reports(
+
+                method=
+                    values[
+                        "method"
+                    ],
+
+                values=
+                    values,
             )
 
             full_output += (
@@ -2261,16 +2727,22 @@ def index():
                 "================\n"
             )
 
-            full_output += out3
+            full_output += (
+                out3
+            )
 
             if not s3:
+
                 full_success = False
 
 
-            success = full_success
+            success = (
+                full_success
+            )
 
-            output = full_output
-
+            output = (
+                full_output
+            )
 
             if success:
 
@@ -2288,9 +2760,9 @@ def index():
                 )
 
 
-        # --------------------------------------------------------
+        # ----------------------------------------------------
         # INVALID ACTION
-        # --------------------------------------------------------
+        # ----------------------------------------------------
 
         else:
 
@@ -2301,7 +2773,8 @@ def index():
             )
 
             output = (
-                f"Unknown action: {action}"
+                f"Unknown action: "
+                f"{action}"
             )
 
 
@@ -2313,33 +2786,49 @@ def index():
             "Unexpected error."
         )
 
-        output = traceback.format_exc()
+        output = (
+            traceback.format_exc()
+        )
 
 
-    files = list_final_report_files()
+    files = (
+        list_final_report_files()
+    )
 
 
     return render_template_string(
+
         HTML_PAGE,
 
-        values=values,
+        values=
+            values,
 
-        status=status,
+        status=
+            status,
 
-        success=success,
+        success=
+            success,
 
-        output=output,
+        output=
+            output,
 
-        files=files,
+        files=
+            files,
 
         input_dat_path=
-            str(INPUT_DAT),
+            str(
+                INPUT_DAT
+            ),
 
         ph_database_file=
-            str(PH_DATABASE_FILE),
+            str(
+                PH_DATABASE_FILE
+            ),
 
         ph_csv_file=
-            str(PH_CSV_FILE),
+            str(
+                PH_CSV_FILE
+            ),
     )
 
 
@@ -2349,21 +2838,27 @@ def index():
 
 @app.route(
     "/download/<method>/<filename>",
-    methods=["GET"]
+    methods=[
+        "GET"
+    ],
 )
 def download_file(
     method,
-    filename
+    filename,
 ):
 
-    method = method.lower()
+    method = (
+        method.lower()
+    )
 
     if method not in [
         "bray",
-        "olsen"
+        "olsen",
     ]:
 
-        abort(404)
+        abort(
+            404
+        )
 
     folder = (
         FINAL_REPORT_DIR
@@ -2377,11 +2872,16 @@ def download_file(
 
     if not file_path.exists():
 
-        abort(404)
+        abort(
+            404
+        )
 
     return send_from_directory(
+
         folder,
+
         filename,
+
         as_attachment=True,
     )
 
@@ -2394,22 +2894,28 @@ if __name__ == "__main__":
 
     INPUT_DIR.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
     OUTPUT_DIR.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
+
+    # --------------------------------------------------------
+    # Creating the directory if missing is harmless.
+    #
+    # No existing files are deleted here.
+    # --------------------------------------------------------
 
     FINAL_REPORT_DIR.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
     Timer(
         1.0,
-        open_browser
+        open_browser,
     ).start()
 
     app.run(
