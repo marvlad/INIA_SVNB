@@ -240,8 +240,8 @@ def get_excel_files(ph_folder, file_name_filter, log):
     Case-insensitive.
     """
     all_excel_files = sorted(
-        list(ph_folder.glob("*.xlsx")) +
-        list(ph_folder.glob("*.xlsm"))
+        list(ph_folder.rglob("*.xlsx")) +
+        list(ph_folder.rglob("*.xlsm"))
     )
 
     # Ignore Excel temporary lock files
